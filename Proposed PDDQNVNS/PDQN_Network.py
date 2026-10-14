@@ -140,7 +140,17 @@ class DoubleDQNAgent():
     loss = self.Q_eval.loss(q_target, q_eval).to(self.Q_eval.device)
 
     ## second format; considering importance
-    loss = T.mean(T.multiply(T.square(loss), T.tensor(importance)))
+    
+    loss = T.mean(
+        T.multiply(
+            T.square(loss),
+            T.as_tensor(
+                importance,
+                dtype=loss.dtype,
+                device=loss.device
+            )
+        )
+    )
 
     loss.backward()
     self.Q_eval.optimizer.step()
