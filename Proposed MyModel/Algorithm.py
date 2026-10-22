@@ -1,4 +1,4 @@
-from PDQN_Network import *
+from PPO_Network import *
 from Reading_dataset import *
 from scipy.spatial.distance import euclidean
 
@@ -49,9 +49,15 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
             cluster_coords[depot][client] = C[client]
             cluster_service[depot][client] = T_Service[client]
 
-    Agents = DoubleDQNAgent(gamma=0.99, epsilon=1.0, batch_size=64, n_actions = action_dim,
-                eps_end=0.01, input_dims=state_dim, lr=0.003)
-    Agents.Q_eval.exploration_proba = 0.5
+    Agents = PPOAgent(
+        input_dims=state_dim,
+        n_actions=action_dim,
+        lr=0.0003,
+        gamma=0.99,
+        batch_size=64,
+        update_epochs=4,
+        clip_epsilon=0.2
+    )
 
     dv_assignment = dict()
 
@@ -159,33 +165,32 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                                 envs[depot][v]['idle'] = False
                                 reward = 0
                         
-                                unseen_clients = copy.deepcopy(envs[depot][v]['unvisited_clients'])
-                                # print(f"Unseen Clients for {depot} => ", unseen_clients)
-                                for item in unseen_clients:
-                                    if envs[depot][v]['Q'] < cluster_demands[depot][item]:
-                                        unseen_clients.remove(item)
-                                # print(f"Unseen Clients for {depot} => ", unseen_clients)
+                                # 未訪問顧客のうち、残り容量で訪問できる顧客だけを候補にする
+                                unseen_clients = [
+                                    client
+                                    for client in envs[depot][v]['unvisited_clients']
+                                    if envs[depot][v]['Q'] >= cluster_demands[depot][client]
+                                ]
 
                                 if len(unseen_clients):
-                                    rand_num = np.random.uniform(0,1)
-                                    if  rand_num < Agents.Q_eval.exploration_proba:
-                                        # print("Random selection")
-                                        rand_indx = np.random.randint(0,len(unseen_clients))
-                                        next_client = unseen_clients[rand_indx]
-                                    else:
-                                        # print("Network Selection")
-                                        actions = Agents.choose_action(current_state)
-                                        q_values_detached = actions.cpu().detach().numpy()#[0]
-                                        q_values = dict()
-                                        for item in Clusters[depot]:
-                                            q_values[item] = q_values_detached[item-len(D)]
+                                    # 顧客IDをPPOの行動インデックスに変換
+                                    valid_action_indices = [
+                                        client - len(D) for client in unseen_clients
+                                    ]
 
-                                        unseen_clients_qvalues = []
-                                        for client in unseen_clients:
-                                            unseen_clients_qvalues.append(q_values[client])
-                                        
-                                        selected_indx = np.argmax(unseen_clients_qvalues)
-                                        next_client = unseen_clients[selected_indx]
+                                    # PPOで行動を選択
+                                    (
+                                        action_index,
+                                        log_prob,
+                                        state_value,
+                                        action_mask
+                                    ) = Agents.choose_action(
+                                        current_state,
+                                        valid_action_indices
+                                    )
+
+                                    # 行動インデックスから実際の顧客IDに戻す
+                                    next_client = action_index + len(D)
                                     
 
                                     ############# Time Window Examination ##############
@@ -221,7 +226,7 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                                         state[4] = reward  
                                         next_state = state
 
-                                        Agents.store_transition(current_state, action, reward, next_state, envs[depot][v]['done'])
+                                        Agents.store_transition(current_state,action_index,reward,next_state,len(envs[depot][v]['unvisited_clients']) <= 1,log_prob,state_value,action_mask)
                                         envs[depot][v]['current_state'] = next_state
                                         envs[depot][v]['current_state_id'] = next_client
                                         envs[depot][v]['current_route'].append(next_client)
@@ -256,7 +261,7 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                                         state[4] = reward  
                                         next_state = state
 
-                                        Agents.store_transition(current_state, action, reward, next_state, envs[depot][v]['done'])
+                                        Agents.store_transition(current_state,action_index,reward,next_state,len(envs[depot][v]['unvisited_clients']) <= 1,log_prob,state_value,action_mask)
                                         envs[depot][v]['current_state'] = next_state
                                         envs[depot][v]['current_state_id'] = next_client
                                         envs[depot][v]['current_route'].append(next_client)
@@ -289,7 +294,7 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                                         state[4] = reward  
                                         next_state = state
 
-                                        Agents.store_transition(current_state, action, reward, next_state, envs[depot][v]['done'])
+                                        Agents.store_transition(current_state,action_index,reward,next_state,len(envs[depot][v]['unvisited_clients']) <= 1,log_prob,state_value,action_mask)
                                         envs[depot][v]['current_state'] = next_state
                                         envs[depot][v]['current_state_id'] = next_client
                                         envs[depot][v]['current_route'].append(next_client)
@@ -307,9 +312,6 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                             loss = Agents.learn()
                             # print(f">> Training_phase: {loss}\n")
 
-                        if update_steps % Target_update_freq == 0 and update_steps > 0:
-                            Agents.target_Q = copy.deepcopy(Agents.Q_eval)
-
 
                         if not len(envs[depot][v]['unvisited_clients']):
                             envs[depot][v]['done'] = True
@@ -318,7 +320,6 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
 
                         # print(envs[depot]['done'])
                         if envs[depot][v]['done']:
-                            Agents.Q_eval.update_exploration_probability()
                             envs[depot][v]['total_routes'].append(envs[depot][v]['current_route'])
                             envs[depot][v]['current_route'] = []
                         
@@ -332,6 +333,9 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                     if not envs[d][v]['done']:
                         all_done = False
         
+        # エピソード終了時に残った経験も学習に使用する
+        Agents.learn(force=True)
+
         # print(f"=========== episode {episode} finished ===========")
         total_dist = 0
         total_routes = dict()
