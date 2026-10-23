@@ -93,12 +93,9 @@ class PPOAgent:
         self.action_masks = []
 
     def choose_action(self, observation, valid_action_indices):
-        print("PPO DEBUG 1: 関数開始", flush=True)
 
         if len(valid_action_indices) == 0:
             raise ValueError("選択可能な行動がありません。")
-
-        print("PPO DEBUG 2: 有効な行動数 =", len(valid_action_indices), flush=True)
 
         state = torch.as_tensor(
             np.asarray(observation, dtype=np.float32),
@@ -106,43 +103,24 @@ class PPOAgent:
             device=self.device
         ).reshape(1, -1)
 
-        print("PPO DEBUG 3: state作成完了", tuple(state.shape), flush=True)
-
         action_mask = np.zeros(self.n_actions, dtype=np.bool_)
         action_mask[valid_action_indices] = True
-
-        print("PPO DEBUG 4: action_mask作成完了", flush=True)
 
         mask_tensor = torch.as_tensor(
             action_mask, dtype=torch.bool, device=self.device
         )
 
-        print("PPO DEBUG 5: Actor実行前", flush=True)
-
         with torch.no_grad():
             logits = self.actor(state).squeeze(0)
 
-            print("PPO DEBUG 6: Actor実行完了", tuple(logits.shape), flush=True)
-
             logits = logits.masked_fill(~mask_tensor, -1e9)
-
-            print("PPO DEBUG 7: マスク適用完了", flush=True)
 
             distribution = Categorical(logits=logits)
 
-            print("PPO DEBUG 8: 確率分布作成完了", flush=True)
-            print("PPO DEBUG 8-1: logits =", logits, flush=True)
-            print("PPO DEBUG 8-2: probs =", distribution.probs, flush=True)
-            print("PPO DEBUG 8-3: device =", distribution.probs.device, flush=True)
-
             action = distribution.sample()
-
-            print("PPO DEBUG 9: 行動選択完了", flush=True)
 
             log_prob = distribution.log_prob(action)
             state_value = self.critic(state).squeeze(0)
-
-            print("PPO DEBUG 10: Critic実行完了", flush=True)
 
         result = (
             int(action.item()),
@@ -150,8 +128,7 @@ class PPOAgent:
             float(state_value.item()),
             action_mask
         )
-
-        print("PPO DEBUG 11: 関数終了", flush=True)
+        
         return result
 
     def store_transition(

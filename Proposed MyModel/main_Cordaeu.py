@@ -26,7 +26,7 @@ if __name__ == "__main__":
     RunTime = dict()
     results = []
 
-    file_id = [1] ## 1-21
+    file_id = list(range(1, 21)) ## 1-21
     routes = {}
     training_times = {}
     
@@ -110,7 +110,7 @@ if __name__ == "__main__":
         maxTime = Vehicle_info['max_T'][0]/10
 
         Max_VRT = maxTime
-        n_episodes = 2
+        n_episodes = 200
         n_vehicles = depot_num
         n_timesteps = max(data_df['DUE_DATE']) + 100
 

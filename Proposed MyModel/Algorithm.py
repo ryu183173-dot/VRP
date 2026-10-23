@@ -179,7 +179,6 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                                     ]
 
                                     # PPOで行動を選択
-                                    print("DEBUG A: choose_action 開始", flush=True)
                                     (
                                         action_index,
                                         log_prob,
@@ -192,8 +191,6 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
 
                                     # 行動インデックスから実際の顧客IDに戻す
                                     next_client = action_index + len(D)
-                                    print("DEBUG B: choose_action 完了", next_client, flush=True)
-                                    
 
                                     ############# Time Window Examination ##############
                                     tw_start = envs[depot][v]['client_TW'][next_client][0] 
@@ -311,9 +308,7 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                                         envs[depot][v]['unvisited_clients'] = copy.deepcopy(remained_clients)
 
                         if update_steps % Q_update_frequency == 0 and update_steps > 0:
-                            print("DEBUG C: learn 開始", update_steps, flush=True)
                             loss = Agents.learn()
-                            print("DEBUG C: learn 完了", flush=True)
                             # print(f">> Training_phase: {loss}\n")
 
 
