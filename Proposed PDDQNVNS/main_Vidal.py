@@ -5,6 +5,7 @@ from Algorithm import RL_Agent
 from VNS import *
 from tqdm import tqdm
 import time
+import os
 
 
 ## Vidal dataset coordinates are scatterred within a range of -100 to 100 => the max of X and Y is typically around 77-99
@@ -18,13 +19,57 @@ import time
 ## Ready and due time horizons are around 200 to 700; So, we can divide them by 1000, as the due time for depots 
 ##   are from 0 to 1000, and the max horizon is considered to be 1.
 
-if __name__ == "__main__":
-    dataset = "Vidal"
+# 1回の実行で新たに処理するインスタンス数
+MAX_INSTANCES_PER_RUN = 1
 
-    Total_Solution = dict()
-    Total_Distances = dict()
-    RunTime = dict()
-    results = []
+if __name__ == "__main__":
+    import ast
+
+    dataset = "Vidal"
+    csv_path = "./PAVNS_Vidal.csv"
+
+    Total_Solution = {}
+    Total_Distances = {}
+    RunTime = {}
+
+    # 保存済みの結果があれば読み込む
+    if os.path.exists(csv_path):
+        results_df = pd.read_csv(csv_path)
+
+        # DS列から完了済みインスタンスを取得
+        completed_instances = set(
+            results_df["DS"].dropna().astype(str)
+        )
+
+        # 既存の結果を引き継ぐ
+        results = results_df.to_dict(orient="records")
+
+        for _, row in results_df.iterrows():
+            ds = str(row["DS"])
+
+            Total_Solution[ds] = ast.literal_eval(
+                str(row["Final_Solution"])
+            )
+
+            Total_Distances[ds] = {
+                "Initial Solution": float(row["Initial_Dist"]),
+                "Sum": float(row["Final_Dist"]),
+                "Cust_Num": int(row["Cust_Num"]),
+                "Depot_Num": int(row["Depot_Num"]),
+            }
+
+            RunTime[ds] = float(row["Time"])
+
+        print("保存済みインスタンス数:", len(completed_instances))
+        print("保存済みインスタンス:", sorted(completed_instances))
+
+    else:
+        completed_instances = set()
+        results = []
+        print("保存済みCSVがないため、最初から実行します。")
+
+    # 今回の実行で新たに完了したインスタンス数
+    processed_this_run = 0
 
     file_id = list(range(11, 25))
     dataset_subs = ['a', 'b']
@@ -32,11 +77,24 @@ if __name__ == "__main__":
     training_times = {}
     
     for dataset_sub in dataset_subs:
-        for dataset_num_ind in tqdm(list(range(len(file_id))), desc=f"Instances({dataset_sub}): "):
+        for dataset_num_ind in tqdm(
+            list(range(len(file_id))),
+            desc=f"Instances({dataset_sub}): "
+        ):
+            # 今回の実行数に達したら終了
+            if processed_this_run >= MAX_INSTANCES_PER_RUN:
+                break
+
             dataset_num = file_id[dataset_num_ind]
             print(f"\n============ pr_{dataset_num}_{dataset_sub} ============ ")
             data_path = f"./Dataset/Public/vidal-al-2013-mdvrptw/pr"+str(dataset_num)+dataset_sub+".txt"
             ds_title = f"pr{dataset_num}{dataset_sub}"
+
+            # CSVに保存済みのインスタンスはスキップ
+            if ds_title in completed_instances:
+                print(f"{ds_title} は保存済みのためスキップします。")
+                continue
+
             print("DS Title:", ds_title)
 
             routes[ds_title] = []
@@ -154,8 +212,8 @@ if __name__ == "__main__":
             final_distance = 0
             for depot in initial_solution.keys():
                 final_solution[depot] = []
+                route = initial_solution[depot]
                 if len(route)>2:
-                    route = initial_solution[depot]
                     init_dist = tour_distance(route, distance_matrix)
                     initial_distance += init_dist
                     # print("Initial Distance =>", init_dist)
@@ -191,29 +249,41 @@ if __name__ == "__main__":
                         "Depot_Num": len(depot_df)})
             print(f"\n================ Evaluation For Instance {ds_title} Finished ======================\n")
     
+            # インスタンスごとに結果を保存
             results_df = pd.DataFrame(results)
-            results_df.to_csv(f'./PAVNS_Vidal.csv')
+            results_df.to_csv(csv_path, index=False)
 
-        file = open(f'Vidal_PAVNS_Log.txt', 'w')
-        distances_sum = []
-        runtime_sum = []
-        for key in Total_Solution.keys():
-            print(key, "Solution: ", Total_Solution[key])
-            print(key, "Distance:", Total_Distances[key]["Sum"])
-            distances_sum.append(Total_Distances[key]["Sum"])
-            print("Run Time:" ,RunTime[key])
-            runtime_sum.append(RunTime[key])
-            print("==========================\n")
+            completed_instances.add(ds_title)
+            processed_this_run += 1
+            print(
+                f"今回の実行で完了した数: "
+                f"{processed_this_run}/{MAX_INSTANCES_PER_RUN}"
+            )
 
-            file.write(f'{key} >> Solution: {Total_Solution[key]}\n')
-            file.write(f'{key} >> Distance: {Total_Distances[key]["Sum"]}\n')
-            file.write(f'{key} >> Run Time: {RunTime[key]}\n')
-            file.write("==========================\n")
+        if processed_this_run >= MAX_INSTANCES_PER_RUN:
+            break
 
-        print("Mean Total Sum Distances on the instances: ", np.mean(distances_sum))
-        print("Mean Total Run Time on the instances (s): ", np.mean(runtime_sum))
+    # すべてのループ終了後にログを出力
+    file = open('Vidal_PAVNS_Log.txt', 'w')
+    distances_sum = []
+    runtime_sum = []
+    for key in Total_Solution.keys():
+        print(key, "Solution: ", Total_Solution[key])
+        print(key, "Distance:", Total_Distances[key]["Sum"])
+        distances_sum.append(Total_Distances[key]["Sum"])
+        print("Run Time:" ,RunTime[key])
+        runtime_sum.append(RunTime[key])
+        print("==========================\n")
 
-        file.write(f"Mean Total Sum Distances on the instances: {np.mean(distances_sum)}\n")
-        file.write(f"Mean Total Run Time on the instances (s): {np.mean(runtime_sum)}\n")
+        file.write(f'{key} >> Solution: {Total_Solution[key]}\n')
+        file.write(f'{key} >> Distance: {Total_Distances[key]["Sum"]}\n')
+        file.write(f'{key} >> Run Time: {RunTime[key]}\n')
+        file.write("==========================\n")
 
-        file.close()
+    print("Mean Total Sum Distances on the instances: ", np.mean(distances_sum))
+    print("Mean Total Run Time on the instances (s): ", np.mean(runtime_sum))
+
+    file.write(f"Mean Total Sum Distances on the instances: {np.mean(distances_sum)}\n")
+    file.write(f"Mean Total Run Time on the instances (s): {np.mean(runtime_sum)}\n")
+
+    file.close()
