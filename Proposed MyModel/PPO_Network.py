@@ -20,7 +20,7 @@ class ActorNetwork(nn.Module):
         )
 
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
-        self.device = torch.device("cpu")
+        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         self.to(self.device)
 
     def forward(self, state):
@@ -42,7 +42,7 @@ class CriticNetwork(nn.Module):
         )
 
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
-        self.device = torch.device("cpu")
+        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         self.to(self.device)
 
     def forward(self, state):
