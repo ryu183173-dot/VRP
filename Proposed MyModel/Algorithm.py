@@ -138,10 +138,10 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
 
                         if 0 in remaining_demands:
                             remaining_demands.remove(0)
-
+                         
                         if len(remaining_demands):
-                            min_demands = max(0, min(remaining_demands)) 
-                            if envs[depot][v]['Q'] < min_demands or envs[depot][v]['current_route_time']>=route_max_time or envs[depot][v]['energy']<=0: 
+                            min_demands = max(0, min(remaining_demands))                       
+                            if envs[depot][v]['Q'] < min_demands or envs[depot][v]['current_route_time']>=route_max_time or envs[depot][v]['energy']<=0:
                                 ## Return to the depot
                                 next_client = action = depot
                                 reward = 0
@@ -190,7 +190,6 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                                     for client in envs[depot][v]['unvisited_clients']
                                     if envs[depot][v]['Q'] >= cluster_demands[depot][client]
                                 ]
-
                                 if len(unseen_clients):
                                     # 顧客IDをPPOの行動インデックスに変換
                                     valid_action_indices = [
@@ -207,7 +206,6 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                                         current_state,
                                         valid_action_indices
                                     )
-
                                     # 行動インデックスから実際の顧客IDに戻す
                                     next_client = action_index + len(D)
 
@@ -357,7 +355,6 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                 for v in envs[d]:
                     if not envs[d][v]['done']:
                         all_done = False
-        
         # エピソード終了時に残った経験も学習に使用する
         Agents.learn(force=True)
 

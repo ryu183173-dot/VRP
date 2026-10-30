@@ -118,6 +118,7 @@ class PPOAgent:
     def choose_action(self, observation, valid_action_indices):
         """有効な行動候補から確率的に行動を選択する。"""
 
+
         if len(valid_action_indices) == 0:
             raise ValueError("選択可能な行動がありません。")
 
@@ -130,6 +131,7 @@ class PPOAgent:
             device=self.device
         ).reshape(1, -1)
 
+
         action_mask = np.zeros(self.n_actions, dtype=np.bool_)
         action_mask[valid_action_indices] = True
 
@@ -139,15 +141,21 @@ class PPOAgent:
             device=self.device
         )
 
+
         with torch.no_grad():
             logits = self.actor(state).squeeze(0)
+
+
             logits = logits.masked_fill(~mask_tensor, -1e9)
 
+
             distribution = Categorical(logits=logits)
+
             action = distribution.sample()
 
             log_prob = distribution.log_prob(action)
             state_value = self.critic(state).squeeze(0)
+
 
         return (
             int(action.item()),
