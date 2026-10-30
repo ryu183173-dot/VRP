@@ -54,9 +54,12 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
         n_actions=action_dim,
         lr=0.0003,
         gamma=0.99,
+        gae_lambda=0.95,
         batch_size=64,
         update_epochs=4,
-        clip_epsilon=0.2
+        clip_epsilon=0.2,
+        entropy_coef=0.01,
+        value_coef=0.5
     )
 
     dv_assignment = dict()
@@ -73,6 +76,11 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
     print(dv_assignment)
 
     for episode in tqdm(list(range(n_episodes)), desc="PDQN Algorithm Episodes"):
+        trajectory_ids = {
+            (depot, v): (depot, v)
+            for depot in D.keys()
+            for v in dv_assignment[depot]
+        }
         # print(f"\n======= episode {episode} started =======")
         cluster_demands = dict()
         cluster_TW = dict()
@@ -148,8 +156,19 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                                 state[4] = reward                 
 
                                 if len(envs[depot][v]['current_route']):
-                                    envs[depot][v]['total_routes'].append(envs[depot][v]['current_route'])
+
+                                    envs[depot][v]['total_routes'].append(
+                                        envs[depot][v]['current_route']
+                                    )
+
                                     envs[depot][v]['current_route'] = []
+
+                                    # デポ帰還をGAEの軌跡境界として記録
+                                    Agents.mark_trajectory_end(
+                                        trajectory_ids[(depot, v)],
+                                        bootstrap_state=state
+                                    )
+
                                 envs[depot][v]['current_state'] = state
                                 envs[depot][v]['current_state_id'] = depot
                                 envs[depot][v]['Q'] = copy.deepcopy(Q)
@@ -225,7 +244,7 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                                         state[4] = reward  
                                         next_state = state
 
-                                        Agents.store_transition(current_state,action_index,reward,next_state,len(envs[depot][v]['unvisited_clients']) <= 1,log_prob,state_value,action_mask)
+                                        Agents.store_transition(current_state,action_index,reward,next_state,False,log_prob,state_value,action_mask,trajectory_ids[(depot, v)])
                                         envs[depot][v]['current_state'] = next_state
                                         envs[depot][v]['current_state_id'] = next_client
                                         envs[depot][v]['current_route'].append(next_client)
@@ -260,7 +279,7 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                                         state[4] = reward  
                                         next_state = state
 
-                                        Agents.store_transition(current_state,action_index,reward,next_state,len(envs[depot][v]['unvisited_clients']) <= 1,log_prob,state_value,action_mask)
+                                        Agents.store_transition(current_state,action_index,reward,next_state,False,log_prob,state_value,action_mask,trajectory_ids[(depot, v)])
                                         envs[depot][v]['current_state'] = next_state
                                         envs[depot][v]['current_state_id'] = next_client
                                         envs[depot][v]['current_route'].append(next_client)
@@ -293,7 +312,7 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                                         state[4] = reward  
                                         next_state = state
 
-                                        Agents.store_transition(current_state,action_index,reward,next_state,len(envs[depot][v]['unvisited_clients']) <= 1,log_prob,state_value,action_mask)
+                                        Agents.store_transition(current_state,action_index,reward,next_state,False,log_prob,state_value,action_mask,trajectory_ids[(depot, v)])
                                         envs[depot][v]['current_state'] = next_state
                                         envs[depot][v]['current_state_id'] = next_client
                                         envs[depot][v]['current_route'].append(next_client)
@@ -307,21 +326,28 @@ def RL_Agent(C, D, TW_C, Demands, Q, Clusters, T_Service, n_vehicles, n_episodes
                                     for v in dv_assignment[depot]:
                                         envs[depot][v]['unvisited_clients'] = copy.deepcopy(remained_clients)
 
-                        if update_steps % Q_update_frequency == 0 and update_steps > 0:
-                            loss = Agents.learn()
                             # print(f">> Training_phase: {loss}\n")
-
 
                         if not len(envs[depot][v]['unvisited_clients']):
                             envs[depot][v]['done'] = True
+
+                            # 全顧客への配送完了を、その車両の経験の終端として記録
+                            Agents.mark_trajectory_terminal(
+                                trajectory_ids[(depot, v)]
+                            )
+
                         else:
                             envs[depot][v]['done'] = False
 
+
                         # print(envs[depot]['done'])
                         if envs[depot][v]['done']:
-                            envs[depot][v]['total_routes'].append(envs[depot][v]['current_route'])
-                            envs[depot][v]['current_route'] = []
-                        
+                            if len(envs[depot][v]['current_route']):
+                                envs[depot][v]['total_routes'].append(
+                                    envs[depot][v]['current_route']
+                                )
+
+                                envs[depot][v]['current_route'] = []
                 
             global_time_step += 0.1
             update_steps += 1

@@ -25,8 +25,8 @@ MAX_INSTANCES_PER_RUN = 1
 if __name__ == "__main__":
     dataset = "Vidal"
 
-    csv_path = "./PAVNS_MyVidal.csv"
-    log_path = "./MyVidal_PAVNS_Log.txt"
+    csv_path = "./PAVNS_NewMyVidal.csv"
+    log_path = "./NewMyVidal_PAVNS_Log.txt"
 
     Total_Solution = dict()
     Total_Distances = dict()

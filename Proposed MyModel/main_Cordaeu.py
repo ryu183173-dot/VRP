@@ -205,9 +205,9 @@ if __name__ == "__main__":
         print(f"\n================ Evaluation For Instance {ds_title} Finished ======================\n")
     
         results_df = pd.DataFrame(results)
-        results_df.to_csv(f'./PAVNS_MyCordeau.csv')
+        results_df.to_csv(f'./PAVNS_NewMyCordeau.csv')
 
-    file = open(f'MyCordeau_PAVNS_Log.txt', 'w')
+    file = open(f'NewMyCordeau_PAVNS_Log.txt', 'w')
     distances_sum = []
     runtime_sum = []
     for key in Total_Solution.keys():
