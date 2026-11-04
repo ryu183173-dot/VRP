@@ -151,7 +151,7 @@ class PPOAgent:
 
             distribution = Categorical(logits=logits)
 
-            action = distribution.sample()
+            action = torch.multinomial(distribution.probs.detach().cpu(), num_samples=1).squeeze(-1).to(logits.device)
 
             log_prob = distribution.log_prob(action)
             state_value = self.critic(state).squeeze(0)
