@@ -7,18 +7,8 @@ from tqdm import tqdm
 import time
 
 
-## Cordaeu dataset coordinates are scatterred within a range of -100 to 100 => the max of X and Y is typically around 77-99
-## So the coordinates should be first brought to a range of 0-200 and then, 
-##   be scaled using division by 200 to be scaled to a range of 0-1 
-## The maximum value for the depot coordinates is not close to 100, however, as we scaled the customers, we should follow the same path.
-## Maximum Demand value in all dataset instances is 25; So, we can first scale them to 0-10 (as in the random datasets), 
-##   and then, divide them by the capacity of the corresponding graph size. Alternatively, we can also scale them by 
-##   normalizing the demand values (deviding all by the largest number which is 25) => Whichever gets better results is chosen
-## Maximum service time is also 25 in all the instances
-## Ready and due time horizons are around 200 to 700; So, we can divide them by 1000, as the due time for depots 
-##   are from 0 to 1000, and the max horizon is considered to be 1.
-
 if __name__ == "__main__":
+
     dataset = "Cordaeu"
 
     Total_Solution = dict()
@@ -26,44 +16,60 @@ if __name__ == "__main__":
     RunTime = dict()
     results = []
 
-    file_id = list(range(1, 21)) ## 1-21
-    routes = {}
-    training_times = {}
-    
-    for dataset_num_ind in tqdm(list(range(len(file_id))), desc=f"Instances: "):
-        dataset_num = file_id[dataset_num_ind]
-        print(f"============ {dataset}_{dataset_num} ============ ")
-        if dataset_num <=9:
-            data_path = "./Dataset/Public/cordeau2001-mdvrptw/pr0"+str(dataset_num)+".txt"
-            ds_title = f"pr0{str(dataset_num)}"
+    file_id = list(range(1, 21))
+
+    for dataset_num in tqdm(file_id, desc="Instances: "):
+
+        print(f"============ {dataset}_{dataset_num} ============")
+
+        if dataset_num <= 9:
+            data_path = (
+                "./Dataset/Public/cordeau2001-mdvrptw/pr0"
+                + str(dataset_num) + ".txt"
+            )
+            ds_title = f"pr0{dataset_num}"
         else:
-            data_path = "./Dataset/Public/cordeau2001-mdvrptw/pr"+str(dataset_num)+".txt"
-            ds_title = f"pr{str(dataset_num)}"
+            data_path = (
+                "./Dataset/Public/cordeau2001-mdvrptw/pr"
+                + str(dataset_num) + ".txt"
+            )
+            ds_title = f"pr{dataset_num}"
 
-        routes[ds_title] = []
-        data_df, depot_df, Vehicle_info, data_conf = reading_cordeu_ds(data_path)
+        # --------------------------------------------------
+        # 1. Dataset loading
+        # --------------------------------------------------
 
-        # data_df = data_df[0:20]
-        # depot_df = depot_df[0:3]
+        data_df, depot_df, Vehicle_info, data_conf = reading_cordeu_ds(
+            data_path
+        )
 
         depot_num = len(depot_df)
 
-        data_df['XCOORD.'] = (data_df["XCOORD."]+100)/200
-        data_df['YCOORD.'] = (data_df["YCOORD."]+100)/200
-        data_df['DEMAND'] = data_df['DEMAND']/50 #max(data_df['DEMAND'])
-        data_df['SERVICE_TIME'] = data_df['SERVICE_TIME']/50
-        data_df['READY_TIME'] = data_df['READY_TIME']/1000
-        data_df['DUE_DATE'] = data_df['DUE_DATE']/1000
+        # --------------------------------------------------
+        # 2. Data normalization
+        # --------------------------------------------------
 
-        depot_df['XCOORD.'] = (depot_df["XCOORD."]+100)/200
-        depot_df['YCOORD.'] = (depot_df["YCOORD."]+100)/200
-        depot_df['DUE_DATE'] = depot_df['DUE_DATE']/1000
+        data_df["XCOORD."] = (data_df["XCOORD."] + 100) / 200
+        data_df["YCOORD."] = (data_df["YCOORD."] + 100) / 200
+
+        data_df["DEMAND"] = data_df["DEMAND"] / 50
+        data_df["SERVICE_TIME"] = data_df["SERVICE_TIME"] / 50
+        data_df["READY_TIME"] = data_df["READY_TIME"] / 1000
+        data_df["DUE_DATE"] = data_df["DUE_DATE"] / 1000
+
+        depot_df["XCOORD."] = (depot_df["XCOORD."] + 100) / 200
+        depot_df["YCOORD."] = (depot_df["YCOORD."] + 100) / 200
+        depot_df["READY_TIME"] = depot_df["READY_TIME"] / 1000
+        depot_df["DUE_DATE"] = depot_df["DUE_DATE"] / 1000
+
+        # --------------------------------------------------
+        # 3. Construct problem data
+        # --------------------------------------------------
 
         coordinates_customers = dict()
         time_windows_customers = dict()
         demands_customers = dict()
         service_times_customers = dict()
-        customers_info = dict()
 
         coordinates_depots = dict()
         time_windows_depots = dict()
@@ -71,162 +77,336 @@ if __name__ == "__main__":
         total_coords = dict()
 
         index = 0
+
         for item in range(depot_num):
-            coordinates_depots[index] = [depot_df["XCOORD."][item], list(depot_df["YCOORD."])[item]]
-            time_windows_depots[index] = [depot_df["READY_TIME"][item], list(depot_df["DUE_DATE"])[item]]
 
-            total_coords[index] = [depot_df["XCOORD."][item], list(depot_df["YCOORD."])[item]]
+            coordinates_depots[index] = [
+                depot_df["XCOORD."].iloc[item],
+                depot_df["YCOORD."].iloc[item]
+            ]
+
+            time_windows_depots[index] = [
+                depot_df["READY_TIME"].iloc[item],
+                depot_df["DUE_DATE"].iloc[item]
+            ]
+
+            total_coords[index] = coordinates_depots[index]
+
             index += 1
 
-        for item in list(dict(data_df["XCOORD."]).keys()):
-            coordinates_customers[index] = [data_df["XCOORD."][item], list(data_df["YCOORD."])[item]]
-            time_windows_customers[index] = [data_df["READY_TIME"][item], list(data_df["DUE_DATE"])[item]]
-            demands_customers[index] = list(data_df["DEMAND"])[item]
-            service_times_customers[index] = list(data_df["SERVICE_TIME"])[item]
+        for item in data_df.index:
 
-            total_coords[index] = [data_df["XCOORD."][item], list(data_df["YCOORD."])[item]]
+            coordinates_customers[index] = [
+                data_df.loc[item, "XCOORD."],
+                data_df.loc[item, "YCOORD."]
+            ]
+
+            time_windows_customers[index] = [
+                data_df.loc[item, "READY_TIME"],
+                data_df.loc[item, "DUE_DATE"]
+            ]
+
+            demands_customers[index] = data_df.loc[item, "DEMAND"]
+
+            service_times_customers[index] = data_df.loc[
+                item, "SERVICE_TIME"
+            ]
+
+            total_coords[index] = coordinates_customers[index]
+
             index += 1
 
-        # print("\n ======== Total Coordinates ========")
-        # print("Coordinates =>\n", total_coords, '\n')
+        # --------------------------------------------------
+        # 4. DRL settings
+        # --------------------------------------------------
 
-        # print("\n ======== Depots ========")
-        # print("Coordinates =>\n", coordinates_depots, '\n')
-
-        # print("\n ======== Customers ========")
-        # print("Coordinates =>\n", coordinates_customers, '\n')
-
-
-        ######### DRL #########
         C = coordinates_customers
         D = coordinates_depots
         TW_C = time_windows_customers
         ServiceT_C = service_times_customers
         Demands = demands_customers
-        Max_VC = 1 
-        
-        depot_num = len(depot_df)
-        vehicle_num = depot_num
-        maxTime = Vehicle_info['max_T'][0]/10
 
+        Max_VC = 1
+
+        maxTime = Vehicle_info["max_T"][0] / 10
         Max_VRT = maxTime
+
         n_episodes = 200
         n_vehicles = depot_num
-        n_timesteps = max(data_df['DUE_DATE']) + 100
+
+        n_timesteps = max(data_df["DUE_DATE"]) + 100
 
         alpha = 0.1
         beta = 0.2
 
-        ########### Algorithms ##########
-        start_time = time.time()
-        distance_matrix = compute_distances(total_coords)
-        # print("Distance Matrix Created")
-        # print("================================================")
+        # --------------------------------------------------
+        # 5. Distance matrix and depot clusters
+        # --------------------------------------------------
 
-        # clusters = generating_clusters(C, D)
-        # print("Clusters => ", clusters)
+        start_time = time.time()
+
+        distance_matrix = compute_distances(total_coords)
 
         clusters = dict()
-        for d in D:
-            clusters[d] = list()
 
-        Ds = dict()
-        for c in C.keys():
-            min_depot = (None, np.inf)
-            for d in D.keys():
-                if distance_matrix[(c,d)] < min_depot[1]:
-                    min_depot = (d, distance_matrix[(c,d)])
-            Ds[c] = min_depot
+        for depot in D:
+            clusters[depot] = []
 
-        for item in Ds:
-            depot = Ds[item][0]
-            cust = item
-            clusters[depot].append(cust)
-        print(clusters)
+        # Assign each customer to its nearest depot
+        for customer in C.keys():
 
-        
-        agent, routes = RL_Agent(C, D, TW_C, Demands, Max_VC, clusters, ServiceT_C, n_vehicles, n_episodes, n_timesteps, \
-                Q_update_frequency = 2, Target_update_freq = 4, route_max_time = Max_VRT, 
-                alpha=alpha, beta=beta)
-        
-        # print("\n\nInitial routes >>", routes)
+            nearest_depot = min(
+                D.keys(),
+                key=lambda depot: distance_matrix[
+                    (customer, depot)
+                ]
+            )
+
+            clusters[nearest_depot].append(customer)
+
+        print("Clusters:", clusters)
+
+        # --------------------------------------------------
+        # 6. DDQN
+        # --------------------------------------------------
+
+        agent, routes = RL_Agent(
+            C,
+            D,
+            TW_C,
+            Demands,
+            Max_VC,
+            clusters,
+            ServiceT_C,
+            n_vehicles,
+            n_episodes,
+            n_timesteps,
+            Q_update_frequency=2,
+            Target_update_freq=4,
+            route_max_time=Max_VRT,
+            alpha=alpha,
+            beta=beta
+        )
+
+        # Use the scenario corresponding to the returned routes
+        if not hasattr(agent, "last_scenario"):
+            raise AttributeError(
+                "RL_Agent does not contain last_scenario. "
+                "Check Algorithm.py."
+            )
+
+        scenario = agent.last_scenario
+
+        if scenario is None:
+            raise ValueError(
+                "agent.last_scenario is None. "
+                "The final episode scenario was not saved."
+            )
+
+        dynamic_demands = scenario["actual_demands"]
+        dynamic_service = scenario["actual_service"]
+
+        # --------------------------------------------------
+        # 7. Construct initial solution
+        #    Keep each vehicle route separate
+        # --------------------------------------------------
 
         initial_solution = dict()
+
         for depot in routes.keys():
+
             initial_solution[depot] = []
-            for route in routes[depot].values():
-                for r in route:
-                    initial_solution[depot].extend([depot] + r + [depot])
 
-        print("\n\nInitial Solution >>", initial_solution)
+            for vehicle_routes in routes[depot].values():
 
-        ############# VNS #############
+                for customer_route in vehicle_routes:
+
+                    if len(customer_route) == 0:
+                        continue
+
+                    tour = (
+                        [depot]
+                        + list(customer_route)
+                        + [depot]
+                    )
+
+                    initial_solution[depot].append(tour)
+
+        print("\nInitial Solution:")
+        print(initial_solution)
+
+        # --------------------------------------------------
+        # 8. VNS
+        #    Apply VNS to each vehicle route independently
+        # --------------------------------------------------
 
         final_solution = dict()
-        initial_distance = 0
-        final_distance = 0
-        for depot in initial_solution.keys():
-            final_solution[depot] = []
-            route = initial_solution[depot]
-            if len(route)>2:
-                init_dist = tour_distance(route, distance_matrix)
-                initial_distance += init_dist
-                # print("Initial Distance =>", init_dist)
-                best_tour, exploration_time, exploitation_time = vns(route, depot, Demands, Max_VC, distance_matrix, TW_C, ServiceT_C, k_max=50, operator=two_opt)
-                # print(best_tour, exploitation_time, exploration_time)
-                fin_dist  = tour_distance(best_tour, distance_matrix)
-                # print("Final Distance =>", fin_dist)
-                final_distance += fin_dist
-                final_solution[depot].append(best_tour)
-                # print("===============================")
 
-        print("Initial Solution >>", initial_solution)
-        print("Initial Distance >>", initial_distance)
-        print()
-        print("Final Solution >>", final_solution)
-        print("Final Distance >>", final_distance)
+        initial_distance = 0.0
+        final_distance = 0.0
+
+        for depot in initial_solution.keys():
+
+            final_solution[depot] = []
+
+            for route in initial_solution[depot]:
+
+                if len(route) <= 2:
+                    continue
+
+                init_dist = tour_distance(
+                    route,
+                    distance_matrix
+                )
+
+                initial_distance += init_dist
+
+                best_tour, exploration_time, exploitation_time = vns(
+                    route,
+                    depot,
+                    dynamic_demands,
+                    Max_VC,
+                    distance_matrix,
+                    TW_C,
+                    dynamic_service,
+                    k_max=50,
+                    operator=two_opt,
+                    scenario=scenario,
+                    route_max_time=Max_VRT,
+                    alpha=alpha,
+                    beta=beta
+                )
+
+                fin_dist = tour_distance(
+                    best_tour,
+                    distance_matrix
+                )
+
+                final_distance += fin_dist
+
+                final_solution[depot].append(best_tour)
+
+        # --------------------------------------------------
+        # 9. Results
+        # --------------------------------------------------
+
+        print("\nInitial Solution:")
+        print(initial_solution)
+
+        print("Initial Distance:", initial_distance)
+
+        print("\nFinal Solution:")
+        print(final_solution)
+
+        print("Final Distance:", final_distance)
 
         Total_Solution[ds_title] = final_solution
-        Total_Distances[ds_title] = {"Initial Solution": np.sum(initial_distance),
-                                    "Sum": np.sum(final_distance),
-                                    "Cust_Num": len(data_df),
-                                    "Depot_Num": len(depot_df)}
+
+        Total_Distances[ds_title] = {
+            "Initial Solution": initial_distance,
+            "Sum": final_distance,
+            "Cust_Num": len(data_df),
+            "Depot_Num": len(depot_df)
+        }
+
         finish_time = time.time()
+
         RunTime[ds_title] = finish_time - start_time
 
-        results.append({"DS":ds_title, 
-                        "Initial_Solution": initial_solution, 
-                "Final_Solution": final_solution, 
-                "Initial_Dist": np.sum(initial_distance),
-                "Final_Dist": np.sum(final_distance),
-                "Time": RunTime[ds_title],
-                "Cust_Num": len(data_df),
-                "Depot_Num": len(depot_df)})
-        print(f"\n================ Evaluation For Instance {ds_title} Finished ======================\n")
-    
+        results.append({
+            "DS": ds_title,
+            "Initial_Solution": initial_solution,
+            "Final_Solution": final_solution,
+            "Initial_Dist": initial_distance,
+            "Final_Dist": final_distance,
+            "Time": RunTime[ds_title],
+            "Cust_Num": len(data_df),
+            "Depot_Num": len(depot_df)
+        })
+
+        print(
+            f"\n================ Evaluation For Instance "
+            f"{ds_title} Finished ======================\n"
+        )
+
+        # Save after each instance
         results_df = pd.DataFrame(results)
-        results_df.to_csv(f'./PAVNS_Cordeau.csv')
 
-    file = open(f'Cordeau_PAVNS_Log.txt', 'w')
-    distances_sum = []
-    runtime_sum = []
-    for key in Total_Solution.keys():
-        print(key, "Solution: ", Total_Solution[key])
-        print(key, "Distance:", Total_Distances[key]["Sum"])
-        distances_sum.append(Total_Distances[key]["Sum"])
-        print("Run Time:" ,RunTime[key])
-        runtime_sum.append(RunTime[key])
-        print("==========================\n")
+        results_df.to_csv(
+            "./PAVNS_Cordeau.csv",
+            index=False
+        )
 
-        file.write(f'{key} >> Solution: {Total_Solution[key]}\n')
-        file.write(f'{key} >> Distance: {Total_Distances[key]["Sum"]}\n')
-        file.write(f'{key} >> Run Time: {RunTime[key]}\n')
-        file.write("==========================\n")
+    # --------------------------------------------------
+    # 10. Final log
+    # --------------------------------------------------
 
-    print("Mean Total Sum Distances on the instances: ", np.mean(distances_sum))
-    print("Mean Total Run Time on the instances (s): ", np.mean(runtime_sum))
+    with open("Cordeau_PAVNS_Log.txt", "w") as file:
 
-    file.write(f"Mean Total Sum Distances on the instances: {np.mean(distances_sum)}\n")
-    file.write(f"Mean Total Run Time on the instances (s): {np.mean(runtime_sum)}\n")
+        distances_sum = []
+        runtime_sum = []
 
-    file.close()
+        for key in Total_Solution.keys():
+
+            print(key, "Solution:", Total_Solution[key])
+
+            print(
+                key,
+                "Distance:",
+                Total_Distances[key]["Sum"]
+            )
+
+            distances_sum.append(
+                Total_Distances[key]["Sum"]
+            )
+
+            print("Run Time:", RunTime[key])
+
+            runtime_sum.append(RunTime[key])
+
+            print("==========================\n")
+
+            file.write(
+                f'{key} >> Solution: {Total_Solution[key]}\n'
+            )
+
+            file.write(
+                f'{key} >> Distance: '
+                f'{Total_Distances[key]["Sum"]}\n'
+            )
+
+            file.write(
+                f'{key} >> Run Time: {RunTime[key]}\n'
+            )
+
+            file.write("==========================\n")
+
+        mean_distance = (
+            np.mean(distances_sum)
+            if distances_sum else 0
+        )
+
+        mean_runtime = (
+            np.mean(runtime_sum)
+            if runtime_sum else 0
+        )
+
+        print(
+            "Mean Total Sum Distances on the instances:",
+            mean_distance
+        )
+
+        print(
+            "Mean Total Run Time on the instances (s):",
+            mean_runtime
+        )
+
+        file.write(
+            f"Mean Total Sum Distances on the instances: "
+            f"{mean_distance}\n"
+        )
+
+        file.write(
+            f"Mean Total Run Time on the instances (s): "
+            f"{mean_runtime}\n"
+        )
