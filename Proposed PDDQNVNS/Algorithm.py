@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 from configurations import config
 
+
 (
     battery_capacity,
     vehicle_capacity,
@@ -18,17 +19,55 @@ from configurations import config
 
 
 # ==================================================
+# Constants
+# ==================================================
+
+STATE_DIM = 9
+DEMAND_MIN_FACTOR = 0.8
+DEMAND_MAX_FACTOR = 1.2
+SERVICE_MIN_FACTOR = 0.8
+SERVICE_MAX_FACTOR = 1.2
+TRAVEL_MIN_FACTOR = 0.9
+TRAVEL_MAX_FACTOR = 1.3
+ENERGY_MIN_FACTOR = 0.9
+ENERGY_MAX_FACTOR = 1.2
+
+EPS = 1e-8
+
+
+# ==================================================
 # Energy consumption
 # ==================================================
 
 def energy_consumption(dist, current_energy, factor=1.0):
+    """
+    Energy consumption is proportional to distance.
+
+    energy_used = distance * energy_consumption_per_distance
+                  * dynamic_energy_factor
+    """
+
+    dist = max(0.0, float(dist))
+    current_energy = float(current_energy)
+    factor = float(factor)
+
     energy_used = (
-        float(dist)
+        dist
+        * float(energy_consumption_per_distance)
+        * factor
+    )
+
+    return max(0.0, current_energy - energy_used)
+
+
+def required_energy(dist, factor=ENERGY_MAX_FACTOR):
+    """Conservative energy required for a given distance."""
+
+    return (
+        max(0.0, float(dist))
         * float(energy_consumption_per_distance)
         * float(factor)
     )
-
-    return max(0.0, float(current_energy) - energy_used)
 
 
 # ==================================================
@@ -37,12 +76,17 @@ def energy_consumption(dist, current_energy, factor=1.0):
 
 def get_current_position(env, depot, D):
 
-    current_id = env['current_state_id']
+    current_id = env["current_state_id"]
 
     if current_id in D:
         return tuple(D[current_id])
 
-    return tuple(env['client_coords'][current_id])
+    if current_id not in env["client_coords"]:
+        raise KeyError(
+            f"Unknown current node: {current_id}"
+        )
+
+    return tuple(env["client_coords"][current_id])
 
 
 # ==================================================
@@ -61,9 +105,14 @@ def build_candidate_states(env, depot, D, candidate_ids):
 
     for client in candidate_ids:
 
-        target_position = env['client_coords'][client]
+        if client not in env["client_coords"]:
+            raise KeyError(
+                f"Customer {client} is not in this depot cluster."
+            )
 
-        tw_start, tw_end = env['client_TW'][client]
+        target_position = env["client_coords"][client]
+
+        tw_start, tw_end = env["client_TW"][client]
 
         state = np.array(
             [
@@ -71,9 +120,9 @@ def build_candidate_states(env, depot, D, candidate_ids):
                 current_position[1],
                 target_position[0],
                 target_position[1],
-                env['energy'],
-                env['Q'],
-                env['total_time'],
+                env["energy"],
+                env["Q"],
+                env["total_time"],
                 tw_start,
                 tw_end
             ],
@@ -83,7 +132,10 @@ def build_candidate_states(env, depot, D, candidate_ids):
         candidate_states.append(state)
 
     if not candidate_states:
-        return np.empty((0, 9), dtype=np.float32)
+        return np.empty(
+            (0, STATE_DIM),
+            dtype=np.float32
+        )
 
     return np.asarray(
         candidate_states,
@@ -104,7 +156,7 @@ def generate_dynamic_scenario(
     max_capacity
 ):
     """
-    Generate one reproducible dynamic scenario.
+    Generate one reproducible scenario.
 
     Experimental assumptions:
         Demand factor:       U(0.8, 1.2)
@@ -113,7 +165,7 @@ def generate_dynamic_scenario(
         Energy factor:       U(0.9, 1.2)
 
     Actual demand and service time are stored in the
-    environment, but are not used for candidate filtering.
+    scenario, but are not exposed to candidate filtering.
     """
 
     rng = np.random.default_rng(scenario_seed)
@@ -121,31 +173,37 @@ def generate_dynamic_scenario(
     actual_demands = {}
     actual_service = {}
 
-    for client in C.keys():
+    for client in C:
 
         base_demand = float(Demands[client])
         base_service = float(T_Service[client])
 
         actual_demands[client] = (
-            base_demand * rng.uniform(0.8, 1.2)
+            base_demand
+            * rng.uniform(
+                DEMAND_MIN_FACTOR,
+                DEMAND_MAX_FACTOR
+            )
         )
 
         actual_service[client] = (
-            base_service * rng.uniform(0.8, 1.2)
+            base_service
+            * rng.uniform(
+                SERVICE_MIN_FACTOR,
+                SERVICE_MAX_FACTOR
+            )
         )
 
-    # A customer whose actual demand exceeds the full
-    # vehicle capacity cannot be served by this vehicle.
     infeasible_clients = [
         client
         for client, demand in actual_demands.items()
-        if demand > float(max_capacity) + 1e-8
+        if demand > float(max_capacity) + EPS
     ]
 
     if infeasible_clients:
         raise ValueError(
-            "Dynamic scenario contains customers whose "
-            "actual demand exceeds the vehicle capacity. "
+            "Dynamic scenario contains customers whose actual "
+            "demand exceeds the full vehicle capacity. "
             f"Customers: {infeasible_clients}"
         )
 
@@ -161,20 +219,26 @@ def generate_dynamic_scenario(
             if from_node == to_node:
                 continue
 
-            travel_factors[(from_node, to_node)] = (
-                float(rng.uniform(0.9, 1.3))
+            travel_factors[(from_node, to_node)] = float(
+                rng.uniform(
+                    TRAVEL_MIN_FACTOR,
+                    TRAVEL_MAX_FACTOR
+                )
             )
 
-            energy_factors[(from_node, to_node)] = (
-                float(rng.uniform(0.9, 1.2))
+            energy_factors[(from_node, to_node)] = float(
+                rng.uniform(
+                    ENERGY_MIN_FACTOR,
+                    ENERGY_MAX_FACTOR
+                )
             )
 
     return {
-        'seed': int(scenario_seed),
-        'actual_demands': actual_demands,
-        'actual_service': actual_service,
-        'travel_factors': travel_factors,
-        'energy_factors': energy_factors
+        "seed": int(scenario_seed),
+        "actual_demands": actual_demands,
+        "actual_service": actual_service,
+        "travel_factors": travel_factors,
+        "energy_factors": energy_factors
     }
 
 
@@ -197,26 +261,30 @@ def get_travel_information(
         )
     )
 
-    travel_factor = scenario['travel_factors'].get(
-        (from_id, to_id),
-        1.0
+    travel_factor = float(
+        scenario["travel_factors"].get(
+            (from_id, to_id),
+            1.0
+        )
     )
 
-    energy_factor = scenario['energy_factors'].get(
-        (from_id, to_id),
-        1.0
+    energy_factor = float(
+        scenario["energy_factors"].get(
+            (from_id, to_id),
+            1.0
+        )
     )
 
-    travel_time = (
-        dist / max(float(vehicle_velocity), 1e-8)
+    base_travel_time = (
+        dist / max(float(vehicle_velocity), EPS)
     )
 
-    travel_time *= float(travel_factor)
+    travel_time = base_travel_time * travel_factor
 
     return (
         dist,
         travel_time,
-        float(energy_factor)
+        energy_factor
     )
 
 
@@ -233,11 +301,11 @@ def schedule_return_to_depot(
     """
     Start a physical return trip.
 
-    Capacity and battery are restored only after
-    the vehicle reaches its depot.
+    Capacity and battery are restored only after the
+    vehicle reaches its depot.
     """
 
-    if env['returning_to_depot']:
+    if env["returning_to_depot"]:
         return
 
     current_position = get_current_position(
@@ -247,8 +315,7 @@ def schedule_return_to_depot(
     )
 
     depot_position = tuple(D[depot])
-
-    current_id = env['current_state_id']
+    current_id = env["current_state_id"]
 
     dist, travel_time, energy_factor = (
         get_travel_information(
@@ -260,27 +327,40 @@ def schedule_return_to_depot(
         )
     )
 
-    env['total_distance'] += dist
+    required = (
+        dist
+        * float(energy_consumption_per_distance)
+        * energy_factor
+    )
 
-    env['energy'] = energy_consumption(
+    if env["energy"] + EPS < required:
+        raise RuntimeError(
+            "Vehicle does not have enough energy to return "
+            f"to depot {depot}. "
+            f"Remaining energy={env['energy']:.6f}, "
+            f"required energy={required:.6f}."
+        )
+
+    env["total_distance"] += dist
+
+    env["energy"] = energy_consumption(
         dist,
-        env['energy'],
+        env["energy"],
         energy_factor
     )
 
-    env['total_time'] += travel_time
-    env['current_route_time'] += travel_time
+    env["total_time"] += travel_time
+    env["current_route_time"] += travel_time
 
-    if env['current_route']:
+    if env["current_route"]:
 
-        env['total_routes'].append(
-            list(env['current_route'])
+        env["total_routes"].append(
+            list(env["current_route"])
         )
 
-        env['current_route'] = []
+        env["current_route"] = []
 
-    env['returning_to_depot'] = True
-    env['idle'] = True
+    env["returning_to_depot"] = True
 
 
 # ==================================================
@@ -299,8 +379,13 @@ def get_feasible_candidates(
     """
     Candidate filtering uses known/base information.
 
-    Actual demand and actual service time are NOT
-    exposed to this filtering operation.
+    Actual demand and actual service time are not used
+    for candidate filtering.
+
+    Conservative factors:
+        Travel time: 1.3
+        Energy:      1.2
+        Service:     1.2
     """
 
     current_position = get_current_position(
@@ -309,16 +394,16 @@ def get_feasible_candidates(
         D
     )
 
-    current_id = env['current_state_id']
-
     depot_position = tuple(D[depot])
 
     feasible_candidates = []
 
+    velocity = max(float(vehicle_velocity), EPS)
+
     for client in candidate_ids:
 
         target_position = tuple(
-            env['client_coords'][client]
+            env["client_coords"][client]
         )
 
         outbound_dist = float(
@@ -335,36 +420,54 @@ def get_feasible_candidates(
             )
         )
 
-        # Conservative energy feasibility.
-        conservative_energy = (
-            outbound_dist + return_dist
-        ) * energy_consumption_per_distance * 1.2
+        # ------------------------------------------
+        # Capacity feasibility using known demand
+        # ------------------------------------------
 
-        if env['energy'] + 1e-8 < conservative_energy:
+        base_demand = float(Demands[client])
+
+        if base_demand > env["Q"] + EPS:
             continue
 
-        # Conservative travel-time feasibility.
-        conservative_travel_time = (
-            (outbound_dist + return_dist)
-            / max(float(vehicle_velocity), 1e-8)
-            * 1.3
+        if base_demand > env["capacity"] + EPS:
+            continue
+
+        # ------------------------------------------
+        # Conservative energy feasibility
+        # ------------------------------------------
+
+        conservative_energy = (
+            required_energy(
+                outbound_dist,
+                ENERGY_MAX_FACTOR
+            )
+            + required_energy(
+                return_dist,
+                ENERGY_MAX_FACTOR
+            )
         )
 
-        # Base service time is used instead of actual service time.
-        conservative_service_time = (
-            float(T_Service[client]) * 1.2
-        )
+        if env["energy"] + EPS < conservative_energy:
+            continue
 
-        # Estimate waiting time using the known time window.
+        # ------------------------------------------
+        # Conservative travel-time feasibility
+        # ------------------------------------------
+
+        outbound_time = (
+            outbound_dist / velocity
+        ) * TRAVEL_MAX_FACTOR
+
+        return_time = (
+            return_dist / velocity
+        ) * TRAVEL_MAX_FACTOR
+
         estimated_arrival = (
-            env['total_time']
-            + outbound_dist
-            / max(float(vehicle_velocity), 1e-8)
-            * 1.3
+            env["total_time"] + outbound_time
         )
 
         tw_start = float(
-            env['client_TW'][client][0]
+            env["client_TW"][client][0]
         )
 
         estimated_waiting = max(
@@ -372,19 +475,20 @@ def get_feasible_candidates(
             tw_start - estimated_arrival
         )
 
-        estimated_route_time = (
-            env['current_route_time']
-            + conservative_travel_time
-            + conservative_service_time
-            + estimated_waiting
+        conservative_service_time = (
+            float(T_Service[client])
+            * SERVICE_MAX_FACTOR
         )
 
-        if estimated_route_time > route_max_time:
-            continue
+        estimated_route_time = (
+            env["current_route_time"]
+            + outbound_time
+            + estimated_waiting
+            + conservative_service_time
+            + return_time
+        )
 
-        # Prevent selecting a customer whose base demand
-        # already exceeds the vehicle's full capacity.
-        if float(Demands[client]) > float(env['capacity']) + 1e-8:
+        if estimated_route_time > float(route_max_time) + EPS:
             continue
 
         feasible_candidates.append(client)
@@ -415,10 +519,32 @@ def RL_Agent(
     scenario_seed=42
 ):
 
-    # Keep the existing 9-dimensional state.
-    state_dim = 9
-
+    state_dim = STATE_DIM
     action_dim = len(C) + len(D)
+
+    # --------------------------------------------------
+    # Input validation
+    # --------------------------------------------------
+
+    if not D:
+        raise ValueError("At least one depot is required.")
+
+    if n_vehicles < len(D):
+        raise ValueError(
+            "n_vehicles must be at least the number of depots."
+        )
+
+    if float(Q) <= 0:
+        raise ValueError("Vehicle capacity must be positive.")
+
+    if float(battery_capacity) <= 0:
+        raise ValueError("Battery capacity must be positive.")
+
+    if float(vehicle_velocity) <= 0:
+        raise ValueError("Vehicle velocity must be positive.")
+
+    if float(route_max_time) <= 0:
+        raise ValueError("route_max_time must be positive.")
 
     # --------------------------------------------------
     # Cluster information
@@ -427,7 +553,12 @@ def RL_Agent(
     cluster_TW = {}
     cluster_coords = {}
 
-    for depot in D.keys():
+    for depot in D:
+
+        if depot not in Clusters:
+            raise KeyError(
+                f"Cluster information is missing for depot {depot}."
+            )
 
         cluster_TW[depot] = {}
         cluster_coords[depot] = {}
@@ -456,20 +587,16 @@ def RL_Agent(
         lr=0.003
     )
 
+    # Preserve the current initial exploration setting.
     Agents.Q_eval.exploration_proba = 0.5
 
     # --------------------------------------------------
     # Vehicle assignment
     # --------------------------------------------------
 
-    if n_vehicles < len(D):
-        raise ValueError(
-            "n_vehicles must be at least the number of depots."
-        )
-
     dv_assignment = {
         depot: []
-        for depot in D.keys()
+        for depot in D
     }
 
     depot_ids = list(D.keys())
@@ -477,7 +604,6 @@ def RL_Agent(
     for vehicle_index in range(n_vehicles):
 
         depot_index = vehicle_index % len(depot_ids)
-
         depot = depot_ids[depot_index]
 
         dv_assignment[depot].append(vehicle_index)
@@ -498,7 +624,10 @@ def RL_Agent(
         desc="DDQN Dynamic Episodes"
     ):
 
-        # A reproducible scenario for each episode.
+        # ----------------------------------------------
+        # Reproducible dynamic scenario
+        # ----------------------------------------------
+
         episode_scenario = generate_dynamic_scenario(
             C,
             D,
@@ -510,11 +639,11 @@ def RL_Agent(
 
         envs = {}
 
-        # --------------------------------------------------
+        # ----------------------------------------------
         # Environment initialization
-        # --------------------------------------------------
+        # ----------------------------------------------
 
-        for depot in D.keys():
+        for depot in D:
 
             envs[depot] = {}
 
@@ -522,134 +651,130 @@ def RL_Agent(
 
                 envs[depot][vehicle_id] = {
 
-                    'done': False,
+                    "done": False,
 
-                    'total_routes': [],
-                    'current_route': [],
+                    "total_routes": [],
+                    "current_route": [],
 
-                    'total_time': 0.0,
-                    'total_distance': 0.0,
-                    'current_route_time': 0.0,
+                    "total_time": 0.0,
+                    "total_distance": 0.0,
+                    "current_route_time": 0.0,
 
-                    'Q': float(Q),
-                    'capacity': float(Q),
+                    "Q": float(Q),
+                    "capacity": float(Q),
 
-                    'idle': False,
-                    'returning_to_depot': False,
+                    "returning_to_depot": False,
 
-                    # Actual values remain in the environment.
-                    'client_demands': copy.deepcopy(
-                        episode_scenario['actual_demands']
+                    # Actual demand/service are not passed
+                    # to candidate feasibility filtering.
+                    "client_demands": copy.deepcopy(
+                        episode_scenario["actual_demands"]
                     ),
 
-                    'client_TW': copy.deepcopy(
+                    "client_TW": copy.deepcopy(
                         cluster_TW[depot]
                     ),
 
-                    'client_coords': copy.deepcopy(
+                    "client_coords": copy.deepcopy(
                         cluster_coords[depot]
                     ),
 
-                    'client_service': copy.deepcopy(
-                        episode_scenario['actual_service']
+                    "client_service": copy.deepcopy(
+                        episode_scenario["actual_service"]
                     ),
 
-                    'current_state_id': depot,
+                    "current_state_id": depot,
 
-                    'current_state': np.zeros(
+                    "current_state": np.zeros(
                         state_dim,
                         dtype=np.float32
                     ),
 
-                    'next_state': np.zeros(
+                    "next_state": np.zeros(
                         state_dim,
                         dtype=np.float32
                     ),
 
-                    'unvisited_clients': list(
+                    "unvisited_clients": list(
                         Clusters[depot]
                     ),
 
-                    'energy': float(battery_capacity)
+                    "energy": float(battery_capacity)
                 }
 
         global_time_step = 0.0
         update_steps = 0
-
         all_done = False
 
-        # --------------------------------------------------
+        # ----------------------------------------------
         # Main simulation loop
-        # --------------------------------------------------
+        # ----------------------------------------------
 
         while (
             not all_done
             and global_time_step <= n_time_steps
         ):
 
-            for depot in D.keys():
+            for depot in D:
 
                 for vehicle_id in dv_assignment[depot]:
 
                     env = envs[depot][vehicle_id]
 
-                    if env['done']:
+                    if env["done"]:
                         continue
 
                     # Vehicle is travelling or serving.
-                    if global_time_step + 1e-8 < env['total_time']:
+                    if (
+                        global_time_step + EPS
+                        < env["total_time"]
+                    ):
                         continue
 
-                    # --------------------------------------------------
+                    # ----------------------------------
                     # Complete return trip
-                    # --------------------------------------------------
+                    # ----------------------------------
 
-                    if env['returning_to_depot']:
+                    if env["returning_to_depot"]:
 
-                        env['current_state_id'] = depot
+                        env["current_state_id"] = depot
 
-                        env['energy'] = float(
+                        env["energy"] = float(
                             battery_capacity
                         )
 
-                        env['Q'] = float(
-                            env['capacity']
+                        env["Q"] = float(
+                            env["capacity"]
                         )
 
-                        env['current_route_time'] = 0.0
+                        env["current_route_time"] = 0.0
 
-                        env['returning_to_depot'] = False
-                        env['idle'] = False
+                        env["returning_to_depot"] = False
 
-                    # --------------------------------------------------
+                    # ----------------------------------
                     # Completion check
-                    # --------------------------------------------------
+                    # ----------------------------------
 
-                    if not env['unvisited_clients']:
+                    if not env["unvisited_clients"]:
 
-                        if env['current_route']:
+                        if env["current_route"]:
 
-                            env['total_routes'].append(
-                                list(env['current_route'])
+                            env["total_routes"].append(
+                                list(env["current_route"])
                             )
 
-                            env['current_route'] = []
+                            env["current_route"] = []
 
-                        env['done'] = True
-
+                        env["done"] = True
                         continue
 
-                    # --------------------------------------------------
-                    # Candidate list from SAP
-                    # --------------------------------------------------
+                    # ----------------------------------
+                    # SAP candidate list
+                    # ----------------------------------
 
                     candidate_ids = list(
-                        env['unvisited_clients']
+                        env["unvisited_clients"]
                     )
-
-                    # --------------------------------------------------
-                    # Return decision
-                    # --------------------------------------------------
 
                     current_position = get_current_position(
                         env,
@@ -657,7 +782,7 @@ def RL_Agent(
                         D
                     )
 
-                    current_id = env['current_state_id']
+                    current_id = env["current_state_id"]
 
                     depot_position = tuple(D[depot])
 
@@ -668,11 +793,9 @@ def RL_Agent(
                         )
                     )
 
-                    return_energy_need = (
-                        return_dist
-                        * energy_consumption_per_distance
-                        * 1.2
-                    )
+                    # ----------------------------------
+                    # Return decision
+                    # ----------------------------------
 
                     base_demands_remaining = [
                         float(Demands[client])
@@ -685,18 +808,30 @@ def RL_Agent(
                         else 0.0
                     )
 
+                    return_energy_need = required_energy(
+                        return_dist,
+                        ENERGY_MAX_FACTOR
+                    )
+
                     should_return = (
 
-                        env['Q'] + 1e-8 < min_base_demand
+                        env["Q"] + EPS < min_base_demand
 
-                        or env['current_route_time']
-                        >= route_max_time
+                        or env["current_route_time"]
+                        >= route_max_time - EPS
 
-                        or env['energy'] + 1e-8
+                        or env["energy"] + EPS
                         < return_energy_need
                     )
 
                     if should_return:
+
+                        if current_id == depot:
+                            raise RuntimeError(
+                                "Vehicle cannot serve any remaining "
+                                f"customer from depot {depot}. "
+                                "Check demand, capacity and constraints."
+                            )
 
                         schedule_return_to_depot(
                             env,
@@ -707,9 +842,9 @@ def RL_Agent(
 
                         continue
 
-                    # --------------------------------------------------
+                    # ----------------------------------
                     # Feasible candidate filtering
-                    # --------------------------------------------------
+                    # ----------------------------------
 
                     feasible_candidates = get_feasible_candidates(
                         env,
@@ -723,13 +858,7 @@ def RL_Agent(
 
                     if not feasible_candidates:
 
-                        # If no route has been started and no customer
-                        # can be served from the depot, the instance
-                        # cannot be completed under the current limits.
-                        if (
-                            not env['current_route']
-                            and current_id == depot
-                        ):
+                        if current_id == depot:
                             raise RuntimeError(
                                 "No feasible customer can be reached "
                                 f"from depot {depot}. "
@@ -746,9 +875,9 @@ def RL_Agent(
 
                         continue
 
-                    # --------------------------------------------------
+                    # ----------------------------------
                     # Candidate states
-                    # --------------------------------------------------
+                    # ----------------------------------
 
                     candidate_states = build_candidate_states(
                         env,
@@ -757,11 +886,9 @@ def RL_Agent(
                         feasible_candidates
                     )
 
-                    selected_index = Agents.choose_action(
-                        candidate_states
+                    selected_index = int(
+                        Agents.choose_action(candidate_states)
                     )
-
-                    selected_index = int(selected_index)
 
                     if (
                         selected_index < 0
@@ -779,12 +906,12 @@ def RL_Agent(
                         selected_index
                     ].copy()
 
-                    # --------------------------------------------------
+                    # ----------------------------------
                     # Travel to customer
-                    # --------------------------------------------------
+                    # ----------------------------------
 
                     next_position = tuple(
-                        env['client_coords'][next_client]
+                        env["client_coords"][next_client]
                     )
 
                     dist, travel_time, energy_factor = (
@@ -798,42 +925,55 @@ def RL_Agent(
                     )
 
                     departure_time = float(
-                        env['total_time']
+                        env["total_time"]
                     )
 
                     arrival_time = (
                         departure_time + travel_time
                     )
 
-                    # --------------------------------------------------
+                    # ----------------------------------
                     # Energy consumption
-                    # --------------------------------------------------
+                    # ----------------------------------
 
-                    env['energy'] = energy_consumption(
+                    energy_required = (
+                        dist
+                        * float(energy_consumption_per_distance)
+                        * energy_factor
+                    )
+
+                    if env["energy"] + EPS < energy_required:
+                        raise RuntimeError(
+                            "Energy feasibility check failed "
+                            "during travel to customer "
+                            f"{next_client}."
+                        )
+
+                    env["energy"] = energy_consumption(
                         dist,
-                        env['energy'],
+                        env["energy"],
                         energy_factor
                     )
 
-                    env['total_distance'] += dist
+                    env["total_distance"] += dist
 
-                    env['current_state_id'] = next_client
+                    env["current_state_id"] = next_client
 
-                    # --------------------------------------------------
+                    # ----------------------------------
                     # Reveal actual demand at arrival
-                    # --------------------------------------------------
+                    # ----------------------------------
 
                     actual_demand = float(
-                        env['client_demands'][next_client]
+                        env["client_demands"][next_client]
                     )
 
                     # If actual demand exceeds remaining capacity,
-                    # do not serve it. Return and try again after reload.
-                    if actual_demand > env['Q'] + 1e-8:
+                    # return to depot and retry after reloading.
+                    if actual_demand > env["Q"] + EPS:
 
-                        env['total_time'] = arrival_time
+                        env["total_time"] = arrival_time
 
-                        env['current_route_time'] += travel_time
+                        env["current_route_time"] += travel_time
 
                         schedule_return_to_depot(
                             env,
@@ -844,16 +984,16 @@ def RL_Agent(
 
                         continue
 
-                    # --------------------------------------------------
+                    # ----------------------------------
                     # Time-window evaluation
-                    # --------------------------------------------------
+                    # ----------------------------------
 
                     tw_start = float(
-                        env['client_TW'][next_client][0]
+                        env["client_TW"][next_client][0]
                     )
 
                     tw_end = float(
-                        env['client_TW'][next_client][1]
+                        env["client_TW"][next_client][1]
                     )
 
                     waiting_time = max(
@@ -871,7 +1011,7 @@ def RL_Agent(
                     )
 
                     actual_service_time = float(
-                        env['client_service'][next_client]
+                        env["client_service"][next_client]
                     )
 
                     completion_time = (
@@ -879,55 +1019,57 @@ def RL_Agent(
                         + actual_service_time
                     )
 
-                    # --------------------------------------------------
-                    # Original reward function
-                    # --------------------------------------------------
+                    # ----------------------------------
+                    # Reward
+                    # ----------------------------------
 
-                    reward = 1.0 / (dist + 1e-8)
+                    # Preserve the existing reward function
+                    # for a fair comparison with the current model.
+                    reward = 1.0 / (dist + EPS)
 
-                    # --------------------------------------------------
+                    # ----------------------------------
                     # Update time
-                    # --------------------------------------------------
+                    # ----------------------------------
 
-                    env['total_time'] = completion_time
+                    env["total_time"] = completion_time
 
-                    env['current_route_time'] += (
+                    env["current_route_time"] += (
                         travel_time
                         + waiting_time
                         + actual_service_time
                     )
 
-                    # --------------------------------------------------
-                    # Update capacity with actual demand
-                    # --------------------------------------------------
+                    # ----------------------------------
+                    # Update capacity
+                    # ----------------------------------
 
-                    env['Q'] -= actual_demand
+                    env["Q"] -= actual_demand
 
-                    env['Q'] = max(
+                    env["Q"] = max(
                         0.0,
-                        env['Q']
+                        env["Q"]
                     )
 
-                    # --------------------------------------------------
+                    # ----------------------------------
                     # Update route and visited customers
-                    # --------------------------------------------------
+                    # ----------------------------------
 
-                    env['current_route'].append(
+                    env["current_route"].append(
                         next_client
                     )
 
-                    env['unvisited_clients'].remove(
+                    env["unvisited_clients"].remove(
                         next_client
                     )
 
-                    env['current_state'] = current_state
+                    env["current_state"] = current_state
 
-                    # --------------------------------------------------
+                    # ----------------------------------
                     # Cooperation
-                    # --------------------------------------------------
+                    # ----------------------------------
 
                     remaining_clients = list(
-                        env['unvisited_clients']
+                        env["unvisited_clients"]
                     )
 
                     for assigned_vehicle in dv_assignment[depot]:
@@ -936,13 +1078,13 @@ def RL_Agent(
                             assigned_vehicle
                         ]
 
-                        other_env['unvisited_clients'] = list(
+                        other_env["unvisited_clients"] = list(
                             remaining_clients
                         )
 
-                    # --------------------------------------------------
+                    # ----------------------------------
                     # Next candidate states
-                    # --------------------------------------------------
+                    # ----------------------------------
 
                     next_candidate_states = build_candidate_states(
                         env,
@@ -955,9 +1097,9 @@ def RL_Agent(
                         len(remaining_clients) == 0
                     )
 
-                    # --------------------------------------------------
+                    # ----------------------------------
                     # Store transition
-                    # --------------------------------------------------
+                    # ----------------------------------
 
                     Agents.store_transition(
                         current_state,
@@ -966,27 +1108,27 @@ def RL_Agent(
                         transition_done
                     )
 
-                    env['next_state'] = current_state.copy()
+                    env["next_state"] = current_state.copy()
 
-                    # --------------------------------------------------
-                    # Episode completion for this vehicle
-                    # --------------------------------------------------
+                    # ----------------------------------
+                    # Vehicle completion
+                    # ----------------------------------
 
                     if not remaining_clients:
 
-                        if env['current_route']:
+                        if env["current_route"]:
 
-                            env['total_routes'].append(
-                                list(env['current_route'])
+                            env["total_routes"].append(
+                                list(env["current_route"])
                             )
 
-                            env['current_route'] = []
+                            env["current_route"] = []
 
-                        env['done'] = True
+                        env["done"] = True
 
-            # --------------------------------------------------
+            # ----------------------------------------------
             # Learning update
-            # --------------------------------------------------
+            # ----------------------------------------------
 
             if (
                 Q_update_frequency > 0
@@ -996,9 +1138,9 @@ def RL_Agent(
 
                 Agents.learn()
 
-            # --------------------------------------------------
+            # ----------------------------------------------
             # Target network update
-            # --------------------------------------------------
+            # ----------------------------------------------
 
             if (
                 Target_update_freq > 0
@@ -1011,42 +1153,34 @@ def RL_Agent(
             global_time_step += 0.1
             update_steps += 1
 
-            # --------------------------------------------------
+            # ----------------------------------------------
             # Completion check
-            # --------------------------------------------------
+            # ----------------------------------------------
 
-            all_done = True
+            all_done = all(
+                envs[depot_id][vehicle_id]["done"]
+                for depot_id in envs
+                for vehicle_id in envs[depot_id]
+            )
 
-            for depot_id in envs.keys():
-
-                for vehicle_id in envs[depot_id]:
-
-                    if not envs[depot_id][vehicle_id]['done']:
-
-                        all_done = False
-                        break
-
-                if not all_done:
-                    break
-
-        # --------------------------------------------------
+        # ----------------------------------------------
         # Check episode completion
-        # --------------------------------------------------
+        # ----------------------------------------------
 
         if not all_done:
 
             unfinished = {}
 
-            for depot_id in envs.keys():
+            for depot_id in envs:
 
                 for vehicle_id in envs[depot_id]:
 
                     env = envs[depot_id][vehicle_id]
 
-                    if not env['done']:
+                    if not env["done"]:
 
                         unfinished[(depot_id, vehicle_id)] = (
-                            list(env['unvisited_clients'])
+                            list(env["unvisited_clients"])
                         )
 
             raise RuntimeError(
@@ -1056,13 +1190,13 @@ def RL_Agent(
                 "Check n_time_steps and route/time constraints."
             )
 
-        # --------------------------------------------------
+        # ----------------------------------------------
         # Store episode routes
-        # --------------------------------------------------
+        # ----------------------------------------------
 
         total_routes = {}
 
-        for depot_id in envs.keys():
+        for depot_id in envs:
 
             total_routes[depot_id] = {}
 
@@ -1070,23 +1204,24 @@ def RL_Agent(
 
                 total_routes[depot_id][vehicle_id] = (
                     copy.deepcopy(
-                        envs[depot_id][vehicle_id]['total_routes']
+                        envs[depot_id][vehicle_id]["total_routes"]
                     )
                 )
 
-        # Keep the final episode scenario for VNS.
+        # ----------------------------------------------
+        # Store final scenario for VNS
+        # ----------------------------------------------
+
         Agents.last_scenario = copy.deepcopy(
             episode_scenario
         )
 
         Agents.last_episode_complete = True
 
-        # Exploration probability is updated once per episode.
-        if hasattr(
-            Agents.Q_eval,
-            'update_exploration_probability'
-        ):
+        # ----------------------------------------------
+        # Exploration probability update
+        # ----------------------------------------------
 
-            Agents.Q_eval.update_exploration_probability()
+        Agents.Q_eval.update_exploration_probability()
 
     return Agents, total_routes

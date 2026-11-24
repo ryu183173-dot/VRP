@@ -1,24 +1,26 @@
 from Reading_dataset import *
 from model_functions import *
-from scipy.spatial.distance import euclidean
 from Algorithm import RL_Agent
 from VNS import *
 from tqdm import tqdm
+
 import time
+import numpy as np
+import pandas as pd
 
 
 if __name__ == "__main__":
 
     dataset = "Cordaeu"
 
-    Total_Solution = dict()
-    Total_Distances = dict()
-    RunTime = dict()
+    Total_Solution = {}
+    Total_Distances = {}
+    RunTime = {}
     results = []
 
     file_id = list(range(1, 21))
 
-    for dataset_num in tqdm(file_id, desc="Instances: "):
+    for dataset_num in tqdm(file_id, desc="Instances:"):
 
         print(f"============ {dataset}_{dataset_num} ============")
 
@@ -66,15 +68,15 @@ if __name__ == "__main__":
         # 3. Construct problem data
         # --------------------------------------------------
 
-        coordinates_customers = dict()
-        time_windows_customers = dict()
-        demands_customers = dict()
-        service_times_customers = dict()
+        coordinates_customers = {}
+        time_windows_customers = {}
+        demands_customers = {}
+        service_times_customers = {}
 
-        coordinates_depots = dict()
-        time_windows_depots = dict()
+        coordinates_depots = {}
+        time_windows_depots = {}
 
-        total_coords = dict()
+        total_coords = {}
 
         index = 0
 
@@ -106,11 +108,13 @@ if __name__ == "__main__":
                 data_df.loc[item, "DUE_DATE"]
             ]
 
-            demands_customers[index] = data_df.loc[item, "DEMAND"]
+            demands_customers[index] = float(
+                data_df.loc[item, "DEMAND"]
+            )
 
-            service_times_customers[index] = data_df.loc[
-                item, "SERVICE_TIME"
-            ]
+            service_times_customers[index] = float(
+                data_df.loc[item, "SERVICE_TIME"]
+            )
 
             total_coords[index] = coordinates_customers[index]
 
@@ -122,6 +126,7 @@ if __name__ == "__main__":
 
         C = coordinates_customers
         D = coordinates_depots
+
         TW_C = time_windows_customers
         ServiceT_C = service_times_customers
         Demands = demands_customers
@@ -140,19 +145,22 @@ if __name__ == "__main__":
         beta = 0.2
 
         # --------------------------------------------------
-        # 5. Distance matrix and depot clusters
+        # 5. Start evaluation timer
         # --------------------------------------------------
 
         start_time = time.time()
 
+        # --------------------------------------------------
+        # 6. Distance matrix and depot clusters
+        # --------------------------------------------------
+
         distance_matrix = compute_distances(total_coords)
 
-        clusters = dict()
+        clusters = {
+            depot: []
+            for depot in D
+        }
 
-        for depot in D:
-            clusters[depot] = []
-
-        # Assign each customer to its nearest depot
         for customer in C.keys():
 
             nearest_depot = min(
@@ -167,7 +175,7 @@ if __name__ == "__main__":
         print("Clusters:", clusters)
 
         # --------------------------------------------------
-        # 6. DDQN
+        # 7. DDQN
         # --------------------------------------------------
 
         agent, routes = RL_Agent(
@@ -188,7 +196,10 @@ if __name__ == "__main__":
             beta=beta
         )
 
-        # Use the scenario corresponding to the returned routes
+        # --------------------------------------------------
+        # 8. Retrieve final episode scenario
+        # --------------------------------------------------
+
         if not hasattr(agent, "last_scenario"):
             raise AttributeError(
                 "RL_Agent does not contain last_scenario. "
@@ -199,19 +210,18 @@ if __name__ == "__main__":
 
         if scenario is None:
             raise ValueError(
-                "agent.last_scenario is None. "
-                "The final episode scenario was not saved."
+                "agent.last_scenario is None."
             )
 
         dynamic_demands = scenario["actual_demands"]
         dynamic_service = scenario["actual_service"]
 
         # --------------------------------------------------
-        # 7. Construct initial solution
-        #    Keep each vehicle route separate
+        # 9. Construct initial solution
+        #    Apply actual-demand capacity splitting first
         # --------------------------------------------------
 
-        initial_solution = dict()
+        initial_solution = {}
 
         for depot in routes.keys():
 
@@ -221,28 +231,63 @@ if __name__ == "__main__":
 
                 for customer_route in vehicle_routes:
 
-                    if len(customer_route) == 0:
+                    if not customer_route:
                         continue
 
-                    tour = (
+                    original_tour = (
                         [depot]
                         + list(customer_route)
                         + [depot]
                     )
 
-                    initial_solution[depot].append(tour)
+                    # Split using the actual demand of this scenario.
+                    capacity_feasible_tour = routes_breaking(
+                        original_tour,
+                        dynamic_demands,
+                        Max_VC,
+                        depot
+                    )
+
+                    split_routes = routes_decompose(
+                        capacity_feasible_tour,
+                        depot
+                    )
+
+                    for split_route in split_routes:
+
+                        if not split_route:
+                            continue
+
+                        initial_solution[depot].append(
+                            [depot]
+                            + list(split_route)
+                            + [depot]
+                        )
 
         print("\nInitial Solution:")
         print(initial_solution)
 
         # --------------------------------------------------
-        # 8. VNS
-        #    Apply VNS to each vehicle route independently
+        # 10. Initial distance
         # --------------------------------------------------
 
-        final_solution = dict()
-
         initial_distance = 0.0
+
+        for depot in initial_solution:
+
+            for route in initial_solution[depot]:
+
+                initial_distance += tour_distance(
+                    route,
+                    distance_matrix
+                )
+
+        # --------------------------------------------------
+        # 11. VNS
+        # --------------------------------------------------
+
+        final_solution = {}
+
         final_distance = 0.0
 
         for depot in initial_solution.keys():
@@ -250,16 +295,6 @@ if __name__ == "__main__":
             final_solution[depot] = []
 
             for route in initial_solution[depot]:
-
-                if len(route) <= 2:
-                    continue
-
-                init_dist = tour_distance(
-                    route,
-                    distance_matrix
-                )
-
-                initial_distance += init_dist
 
                 best_tour, exploration_time, exploitation_time = vns(
                     route,
@@ -277,17 +312,15 @@ if __name__ == "__main__":
                     beta=beta
                 )
 
-                fin_dist = tour_distance(
+                final_solution[depot].append(best_tour)
+
+                final_distance += tour_distance(
                     best_tour,
                     distance_matrix
                 )
 
-                final_distance += fin_dist
-
-                final_solution[depot].append(best_tour)
-
         # --------------------------------------------------
-        # 9. Results
+        # 12. Results
         # --------------------------------------------------
 
         print("\nInitial Solution:")
@@ -311,6 +344,7 @@ if __name__ == "__main__":
 
         finish_time = time.time()
 
+        # Includes distance matrix, DDQN training and VNS.
         RunTime[ds_title] = finish_time - start_time
 
         results.append({
@@ -329,7 +363,7 @@ if __name__ == "__main__":
             f"{ds_title} Finished ======================\n"
         )
 
-        # Save after each instance
+        # Save after each instance.
         results_df = pd.DataFrame(results)
 
         results_df.to_csv(
@@ -338,7 +372,7 @@ if __name__ == "__main__":
         )
 
     # --------------------------------------------------
-    # 10. Final log
+    # 13. Final log
     # --------------------------------------------------
 
     with open("Cordeau_PAVNS_Log.txt", "w") as file:
@@ -362,9 +396,9 @@ if __name__ == "__main__":
 
             print("Run Time:", RunTime[key])
 
-            runtime_sum.append(RunTime[key])
-
-            print("==========================\n")
+            runtime_sum.append(
+                RunTime[key]
+            )
 
             file.write(
                 f'{key} >> Solution: {Total_Solution[key]}\n'
@@ -383,12 +417,12 @@ if __name__ == "__main__":
 
         mean_distance = (
             np.mean(distances_sum)
-            if distances_sum else 0
+            if distances_sum else 0.0
         )
 
         mean_runtime = (
             np.mean(runtime_sum)
-            if runtime_sum else 0
+            if runtime_sum else 0.0
         )
 
         print(

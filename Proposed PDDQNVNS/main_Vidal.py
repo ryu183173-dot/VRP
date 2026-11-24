@@ -1,6 +1,5 @@
 from Reading_dataset import *
 from model_functions import *
-from scipy.spatial.distance import euclidean
 from Algorithm import RL_Agent
 from VNS import *
 from tqdm import tqdm
@@ -12,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 
-# 1回の実行で新たに処理するインスタンス数
+# Number of new instances processed in one execution.
 MAX_INSTANCES_PER_RUN = 1
 
 
@@ -37,7 +36,9 @@ if __name__ == "__main__":
             results_df["DS"].dropna().astype(str)
         )
 
-        results = results_df.to_dict(orient="records")
+        results = results_df.to_dict(
+            orient="records"
+        )
 
         for _, row in results_df.iterrows():
 
@@ -56,15 +57,24 @@ if __name__ == "__main__":
 
             RunTime[ds] = float(row["Time"])
 
-        print("保存済みインスタンス数:", len(completed_instances))
-        print("保存済みインスタンス:", sorted(completed_instances))
+        print(
+            "保存済みインスタンス数:",
+            len(completed_instances)
+        )
+
+        print(
+            "保存済みインスタンス:",
+            sorted(completed_instances)
+        )
 
     else:
 
         completed_instances = set()
         results = []
 
-        print("保存済みCSVがないため、最初から実行します。")
+        print(
+            "保存済みCSVがないため、最初から実行します。"
+        )
 
     # --------------------------------------------------
     # 2. Instance settings
@@ -87,11 +97,7 @@ if __name__ == "__main__":
 
             ds_title = f"pr{dataset_num}{dataset_sub}"
 
-            print(
-                f"\n============ {ds_title} ============\n"
-            )
-
-            # Skip completed instances
+            # Skip completed instances.
             if ds_title in completed_instances:
 
                 print(
@@ -99,6 +105,10 @@ if __name__ == "__main__":
                 )
 
                 continue
+
+            print(
+                f"\n============ {ds_title} ============\n"
+            )
 
             data_path = (
                 "./Dataset/Public/vidal-al-2013-mdvrptw/"
@@ -205,11 +215,11 @@ if __name__ == "__main__":
                     data_df.loc[item, "DUE_DATE"]
                 ]
 
-                demands_customers[index] = (
+                demands_customers[index] = float(
                     data_df.loc[item, "DEMAND"]
                 )
 
-                service_times_customers[index] = (
+                service_times_customers[index] = float(
                     data_df.loc[item, "SERVICE_TIME"]
                 )
 
@@ -233,7 +243,6 @@ if __name__ == "__main__":
             Max_VC = 1
 
             maxTime = Vehicle_info["max_T"][0] / 10
-
             Max_VRT = maxTime
 
             n_episodes = 200
@@ -247,21 +256,24 @@ if __name__ == "__main__":
             beta = 0.2
 
             # --------------------------------------------------
-            # 7. Distance matrix and depot clusters
+            # 7. Start evaluation timer
             # --------------------------------------------------
 
             start_time = time.time()
+
+            # --------------------------------------------------
+            # 8. Distance matrix and depot clusters
+            # --------------------------------------------------
 
             distance_matrix = compute_distances(
                 total_coords
             )
 
-            clusters = {}
+            clusters = {
+                depot: []
+                for depot in D
+            }
 
-            for depot in D:
-                clusters[depot] = []
-
-            # Assign each customer to its nearest depot
             for customer in C.keys():
 
                 nearest_depot = min(
@@ -276,7 +288,7 @@ if __name__ == "__main__":
             print("Clusters:", clusters)
 
             # --------------------------------------------------
-            # 8. DDQN
+            # 9. DDQN
             # --------------------------------------------------
 
             agent, routes = RL_Agent(
@@ -297,7 +309,10 @@ if __name__ == "__main__":
                 beta=beta
             )
 
-            # Retrieve the scenario used in the final episode
+            # --------------------------------------------------
+            # 10. Retrieve final episode scenario
+            # --------------------------------------------------
+
             if not hasattr(agent, "last_scenario"):
 
                 raise AttributeError(
@@ -310,16 +325,15 @@ if __name__ == "__main__":
             if scenario is None:
 
                 raise ValueError(
-                    "agent.last_scenario is None. "
-                    "The final episode scenario was not saved."
+                    "agent.last_scenario is None."
                 )
 
             dynamic_demands = scenario["actual_demands"]
             dynamic_service = scenario["actual_service"]
 
             # --------------------------------------------------
-            # 9. Construct initial solution
-            #    Keep vehicle routes separate
+            # 11. Construct initial solution
+            #     Apply actual-demand capacity splitting first
             # --------------------------------------------------
 
             initial_solution = {}
@@ -332,28 +346,62 @@ if __name__ == "__main__":
 
                     for customer_route in vehicle_routes:
 
-                        if len(customer_route) == 0:
+                        if not customer_route:
                             continue
 
-                        tour = (
+                        original_tour = (
                             [depot]
                             + list(customer_route)
                             + [depot]
                         )
 
-                        initial_solution[depot].append(tour)
+                        capacity_feasible_tour = routes_breaking(
+                            original_tour,
+                            dynamic_demands,
+                            Max_VC,
+                            depot
+                        )
+
+                        split_routes = routes_decompose(
+                            capacity_feasible_tour,
+                            depot
+                        )
+
+                        for split_route in split_routes:
+
+                            if not split_route:
+                                continue
+
+                            initial_solution[depot].append(
+                                [depot]
+                                + list(split_route)
+                                + [depot]
+                            )
 
             print("\nInitial Solution:")
             print(initial_solution)
 
             # --------------------------------------------------
-            # 10. VNS
-            #     Apply VNS to each vehicle route independently
+            # 12. Initial distance
+            # --------------------------------------------------
+
+            initial_distance = 0.0
+
+            for depot in initial_solution:
+
+                for route in initial_solution[depot]:
+
+                    initial_distance += tour_distance(
+                        route,
+                        distance_matrix
+                    )
+
+            # --------------------------------------------------
+            # 13. VNS
             # --------------------------------------------------
 
             final_solution = {}
 
-            initial_distance = 0.0
             final_distance = 0.0
 
             for depot in initial_solution.keys():
@@ -361,16 +409,6 @@ if __name__ == "__main__":
                 final_solution[depot] = []
 
                 for route in initial_solution[depot]:
-
-                    if len(route) <= 2:
-                        continue
-
-                    init_dist = tour_distance(
-                        route,
-                        distance_matrix
-                    )
-
-                    initial_distance += init_dist
 
                     best_tour, exploration_time, exploitation_time = (
                         vns(
@@ -390,19 +428,17 @@ if __name__ == "__main__":
                         )
                     )
 
-                    fin_dist = tour_distance(
-                        best_tour,
-                        distance_matrix
-                    )
-
-                    final_distance += fin_dist
-
                     final_solution[depot].append(
                         best_tour
                     )
 
+                    final_distance += tour_distance(
+                        best_tour,
+                        distance_matrix
+                    )
+
             # --------------------------------------------------
-            # 11. Results
+            # 14. Results
             # --------------------------------------------------
 
             print("\nInitial Solution:")
@@ -426,6 +462,7 @@ if __name__ == "__main__":
 
             finish_time = time.time()
 
+            # Includes distance matrix, DDQN training and VNS.
             RunTime[ds_title] = (
                 finish_time - start_time
             )
@@ -446,12 +483,22 @@ if __name__ == "__main__":
                 f"{ds_title} Finished ======================\n"
             )
 
-            # Save after each completed instance
+            # --------------------------------------------------
+            # 15. Save after each completed instance
+            # --------------------------------------------------
+
             results_df = pd.DataFrame(results)
 
+            temp_csv_path = csv_path + ".tmp"
+
             results_df.to_csv(
-                csv_path,
+                temp_csv_path,
                 index=False
+            )
+
+            os.replace(
+                temp_csv_path,
+                csv_path
             )
 
             completed_instances.add(ds_title)
@@ -467,7 +514,7 @@ if __name__ == "__main__":
             break
 
     # --------------------------------------------------
-    # 12. Final log
+    # 16. Final log
     # --------------------------------------------------
 
     with open("Vidal_PAVNS_Log.txt", "w") as file:
@@ -502,8 +549,6 @@ if __name__ == "__main__":
                 RunTime[key]
             )
 
-            print("==========================\n")
-
             file.write(
                 f"{key} >> Solution: {Total_Solution[key]}\n"
             )
@@ -523,12 +568,12 @@ if __name__ == "__main__":
 
         mean_distance = (
             np.mean(distances_sum)
-            if distances_sum else 0
+            if distances_sum else 0.0
         )
 
         mean_runtime = (
             np.mean(runtime_sum)
-            if runtime_sum else 0
+            if runtime_sum else 0.0
         )
 
         print(

@@ -7,6 +7,7 @@ from scipy.spatial.distance import euclidean
 
 from configurations import config
 
+
 (
     battery_capacity,
     vehicle_capacity,
@@ -14,6 +15,25 @@ from configurations import config
     vehicle_energy_decay,
     energy_consumption_per_distance
 ) = config()
+
+
+EPS = 1e-8
+ENERGY_PENALTY = 1e6
+
+
+# ==================================================
+# Validation
+# ==================================================
+
+def _validate_factor(value, name):
+    value = float(value)
+
+    if not np.isfinite(value) or value <= 0:
+        raise ValueError(
+            f"{name} must be a positive finite value."
+        )
+
+    return value
 
 
 # ==================================================
@@ -47,9 +67,11 @@ def tour_distance(tour, dist_matrix):
 
     for i in range(1, len(tour)):
 
-        total_distance += dist_matrix[
-            (tour[i - 1], tour[i])
-        ]
+        total_distance += float(
+            dist_matrix[
+                (tour[i - 1], tour[i])
+            ]
+        )
 
     return float(total_distance)
 
@@ -107,15 +129,13 @@ def routes_breaking(
     depot
 ):
     """
-    Split routes whenever the vehicle capacity
-    would be exceeded.
-
-    The demand dictionary should contain the actual
-    demand values of the evaluated scenario.
+    Split routes according to actual scenario demands.
     """
 
     if max_cap <= 0:
-        raise ValueError("Vehicle capacity must be positive.")
+        raise ValueError(
+            "Vehicle capacity must be positive."
+        )
 
     original_routes = routes_decompose(
         solution,
@@ -131,9 +151,19 @@ def routes_breaking(
 
         for client in route:
 
+            if client not in demands:
+                raise KeyError(
+                    f"Demand is missing for customer {client}."
+                )
+
             demand = float(demands[client])
 
-            if demand > max_cap + 1e-8:
+            if not np.isfinite(demand) or demand < 0:
+                raise ValueError(
+                    f"Invalid demand for customer {client}: {demand}"
+                )
+
+            if demand > max_cap + EPS:
 
                 raise ValueError(
                     f"Customer {client} demand ({demand}) "
@@ -142,7 +172,7 @@ def routes_breaking(
 
             if (
                 current_route
-                and current_load + demand > max_cap + 1e-8
+                and current_load + demand > max_cap + EPS
             ):
 
                 new_routes.append(current_route)
@@ -168,10 +198,13 @@ def routes_breaking(
 
 def two_opt(route, i, j):
 
-    if len(route) < 4:
-        return list(route)
-
     new_route = list(route)
+
+    if len(new_route) < 2:
+        return new_route
+
+    if i < 0 or j >= len(new_route) or i >= j:
+        return new_route
 
     new_route[i:j + 1] = reversed(
         new_route[i:j + 1]
@@ -190,6 +223,16 @@ def get_dynamic_arc_values(
     dist_matrix,
     scenario=None
 ):
+    """
+    Calculate distance, travel time and energy consumption.
+
+    travel_time:
+        distance / vehicle_velocity * travel_factor
+
+    energy_used:
+        distance * energy_consumption_per_distance
+        * energy_factor
+    """
 
     distance = float(
         dist_matrix[(from_node, to_node)]
@@ -203,35 +246,49 @@ def get_dynamic_arc_values(
     else:
 
         travel_factor = float(
-            scenario['travel_factors'].get(
+            scenario.get(
+                "travel_factors", {}
+            ).get(
                 (from_node, to_node),
                 1.0
             )
         )
 
         energy_factor = float(
-            scenario['energy_factors'].get(
+            scenario.get(
+                "energy_factors", {}
+            ).get(
                 (from_node, to_node),
                 1.0
             )
         )
 
+    travel_factor = _validate_factor(
+        travel_factor,
+        "travel_factor"
+    )
+
+    energy_factor = _validate_factor(
+        energy_factor,
+        "energy_factor"
+    )
+
     travel_time = (
         distance
-        / max(float(vehicle_velocity), 1e-8)
+        / max(float(vehicle_velocity), EPS)
         * travel_factor
     )
 
     energy_used = (
         distance
-        * energy_consumption_per_distance
+        * float(energy_consumption_per_distance)
         * energy_factor
     )
 
     return (
         distance,
-        travel_time,
-        energy_used
+        float(travel_time),
+        float(energy_used)
     )
 
 
@@ -251,11 +308,10 @@ def route_time_eval(
     route_max_time=None
 ):
     """
-    Evaluate time-window penalties using the actual
-    service times and dynamic travel-time factors.
+    Evaluate waiting time, lateness and route duration.
 
-    alpha: waiting-time coefficient
-    beta:  lateness penalty coefficient
+    C_service should contain the service times to be used
+    for the evaluated scenario.
 
     Returns a cost value, not a reward.
     """
@@ -264,6 +320,7 @@ def route_time_eval(
         return 0.0
 
     current_time = 0.0
+
     total_waiting = 0.0
     total_lateness = 0.0
 
@@ -290,6 +347,11 @@ def route_time_eval(
         if to_node not in C_TW:
             continue
 
+        if to_node not in C_service:
+            raise KeyError(
+                f"Service time is missing for customer {to_node}."
+            )
+
         tw_start = float(
             C_TW[to_node][0]
         )
@@ -298,15 +360,30 @@ def route_time_eval(
             C_TW[to_node][1]
         )
 
+        if tw_end < tw_start:
+            raise ValueError(
+                f"Invalid time window for customer {to_node}."
+            )
+
+        service_time = float(
+            C_service[to_node]
+        )
+
+        if service_time < 0 or not np.isfinite(service_time):
+            raise ValueError(
+                f"Invalid service time for customer {to_node}."
+            )
+
+        # Waiting if the vehicle arrives before the time window.
         waiting_time = max(
             0.0,
             tw_start - current_time
         )
 
         total_waiting += waiting_time
-
         current_time += waiting_time
 
+        # Lateness if service starts after the time window.
         lateness = max(
             0.0,
             current_time - tw_end
@@ -314,16 +391,18 @@ def route_time_eval(
 
         total_lateness += lateness
 
-        current_time += float(
-            C_service[to_node]
-        )
+        # Service duration.
+        current_time += service_time
 
+    # Route duration constraint.
     if route_max_time is not None:
 
-        if current_time - route_start > route_max_time:
+        route_duration = current_time - route_start
+
+        if route_duration > route_max_time:
 
             total_lateness += (
-                current_time - route_start - route_max_time
+                route_duration - route_max_time
             )
 
     return float(
@@ -342,11 +421,9 @@ def route_energy_violation(
     scenario=None
 ):
     """
-    Each route is assumed to start from a depot
-    with a fully charged battery.
+    Each route is assumed to start with a fully charged battery.
 
-    This checks the energy required for the route,
-    including the return to the depot.
+    The return trip to the depot is included.
     """
 
     total_energy = 0.0
@@ -397,7 +474,6 @@ def route_objective(
         + energy infeasibility penalty
     """
 
-    # Capacity splitting is performed with actual demand.
     feasible_solution = routes_breaking(
         solution,
         demands,
@@ -441,10 +517,8 @@ def route_objective(
             scenario
         )
 
-        # Strong penalty for a route that exceeds
-        # the available battery capacity.
         energy_penalty = (
-            1e6 * energy_violation
+            ENERGY_PENALTY * energy_violation
         )
 
         total_cost += (
@@ -492,8 +566,7 @@ def local_search(
 
         best_route = list(original_route)
 
-        if len(best_route) < 3:
-
+        if len(best_route) < 2:
             improved_routes.append(best_route)
             continue
 
@@ -551,7 +624,7 @@ def local_search(
                         route_max_time
                     )
 
-                    if candidate_cost + 1e-8 < best_cost:
+                    if candidate_cost + EPS < best_cost:
 
                         best_route = candidate_route
                         best_cost = candidate_cost
@@ -669,13 +742,17 @@ def vns(
     """
     VNS with dynamic scenario evaluation.
 
-    The original positional arguments are preserved.
-    Additional dynamic arguments are optional.
+    Original positional arguments and return structure
+    are preserved.
+
+    Returns:
+        best_solution,
+        exploration_time,
+        exploitation_time
     """
 
     start_time = time.time()
 
-    # Normalize and split the initial solution.
     current_solution = routes_breaking(
         route,
         Demands,
@@ -786,7 +863,7 @@ def vns(
         # Acceptance
         # ------------------------------------------
 
-        if candidate_cost + 1e-8 < best_cost:
+        if candidate_cost + EPS < best_cost:
 
             best_solution = copy.deepcopy(
                 candidate_solution
