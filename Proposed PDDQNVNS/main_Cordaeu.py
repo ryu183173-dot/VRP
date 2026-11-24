@@ -131,7 +131,10 @@ if __name__ == "__main__":
         ServiceT_C = service_times_customers
         Demands = demands_customers
 
-        Max_VC = 1
+        # Demand is normalized by 50 above; normalize the dataset capacity identically.
+        Max_VC = float(Vehicle_info["max_load"][0]) / 50.0
+        if Max_VC <= 0:
+            raise ValueError("Dataset vehicle capacity must be positive.")
 
         maxTime = Vehicle_info["max_T"][0] / 10
         Max_VRT = maxTime
@@ -156,21 +159,7 @@ if __name__ == "__main__":
 
         distance_matrix = compute_distances(total_coords)
 
-        clusters = {
-            depot: []
-            for depot in D
-        }
-
-        for customer in C.keys():
-
-            nearest_depot = min(
-                D.keys(),
-                key=lambda depot: distance_matrix[
-                    (customer, depot)
-                ]
-            )
-
-            clusters[nearest_depot].append(customer)
+        clusters = generating_clusters(C, D)
 
         print("Clusters:", clusters)
 
@@ -292,32 +281,41 @@ if __name__ == "__main__":
 
         for depot in initial_solution.keys():
 
-            final_solution[depot] = []
+            # Algorithm 5 takes the depot-level route R_d as its input.
+            # Join this depot's capacity-feasible trips with depot delimiters,
+            # run VNS once for the depot, then restore the trip-list format.
+            depot_route_set = routes_compose(
+                [routes_decompose(route, depot)[0] for route in initial_solution[depot] if routes_decompose(route, depot)],
+                depot
+            )
 
-            for route in initial_solution[depot]:
+            if not depot_route_set:
+                final_solution[depot] = []
+                continue
 
-                best_tour, exploration_time, exploitation_time = vns(
-                    route,
-                    depot,
-                    dynamic_demands,
-                    Max_VC,
-                    distance_matrix,
-                    TW_C,
-                    dynamic_service,
-                    k_max=50,
-                    operator=two_opt,
-                    scenario=scenario,
-                    route_max_time=Max_VRT,
-                    alpha=alpha,
-                    beta=beta
-                )
+            best_route_set, exploration_time, exploitation_time = vns(
+                depot_route_set,
+                depot,
+                dynamic_demands,
+                Max_VC,
+                distance_matrix,
+                TW_C,
+                dynamic_service,
+                k_max=50,
+                operator=two_opt,
+                scenario=scenario,
+                route_max_time=Max_VRT,
+                alpha=alpha,
+                beta=beta
+            )
 
-                final_solution[depot].append(best_tour)
+            final_solution[depot] = [
+                [depot] + list(trip) + [depot]
+                for trip in routes_decompose(best_route_set, depot)
+            ]
 
-                final_distance += tour_distance(
-                    best_tour,
-                    distance_matrix
-                )
+            for best_tour in final_solution[depot]:
+                final_distance += tour_distance(best_tour, distance_matrix)
 
         # --------------------------------------------------
         # 12. Results

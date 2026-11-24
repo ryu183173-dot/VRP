@@ -447,9 +447,6 @@ def get_feasible_candidates(
             )
         )
 
-        if env["energy"] + EPS < conservative_energy:
-            continue
-
         # ------------------------------------------
         # Conservative travel-time feasibility
         # ------------------------------------------
@@ -479,6 +476,15 @@ def get_feasible_candidates(
             float(T_Service[client])
             * SERVICE_MAX_FACTOR
         )
+
+        # The paper's simplified battery model includes a constant
+        # energy decay while the vehicle is idle (waiting/servicing).
+        conservative_idle_energy = (
+            float(vehicle_energy_decay)
+            * (estimated_waiting + conservative_service_time)
+        )
+        if env["energy"] + EPS < conservative_energy + conservative_idle_energy:
+            continue
 
         estimated_route_time = (
             env["current_route_time"]
@@ -1019,13 +1025,32 @@ def RL_Agent(
                         + actual_service_time
                     )
 
+                    # Vehicle is stationary while waiting and receiving service.
+                    idle_duration = waiting_time + actual_service_time
+                    idle_energy_loss = float(vehicle_energy_decay) * idle_duration
+                    if env["energy"] + EPS < idle_energy_loss:
+                        raise RuntimeError(
+                            f"Vehicle {vehicle_id} at depot {depot} exhausted its battery "
+                            "during waiting/service idle time."
+                        )
+                    env["energy"] = max(0.0, env["energy"] - idle_energy_loss)
+
                     # ----------------------------------
                     # Reward
                     # ----------------------------------
 
-                    # Preserve the existing reward function
-                    # for a fair comparison with the current model.
-                    reward = 1.0 / (dist + EPS)
+                    # Paper equation (8): reward depends on arrival relative
+                    # to the customer's time window. The on-time case is 1/d_ij.
+                    if arrival_time < tw_start:
+                        reward = 1.0 / (
+                            dist + float(alpha) * (tw_start - arrival_time) + EPS
+                        )
+                    elif arrival_time > tw_end:
+                        reward = 1.0 / (
+                            dist + float(beta) * (arrival_time - tw_end) + EPS
+                        )
+                    else:
+                        reward = 1.0 / (dist + EPS)
 
                     # ----------------------------------
                     # Update time

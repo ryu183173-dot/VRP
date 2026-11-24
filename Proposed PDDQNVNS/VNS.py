@@ -418,34 +418,42 @@ def route_time_eval(
 def route_energy_violation(
     tour,
     distance_matrix,
-    scenario=None
+    scenario=None,
+    C_TW=None,
+    C_service=None
 ):
-    """
-    Each route is assumed to start with a fully charged battery.
+    """Return battery-capacity violation including stationary idle decay.
 
-    The return trip to the depot is included.
+    Each capacity-feasible trip starts with a full battery. Travel energy is
+    accumulated per arc; waiting and service durations incur the configured
+    constant idle-energy decay.
     """
-
     total_energy = 0.0
+    current_time = 0.0
+    idle_duration = 0.0
+    depot = tour[0] if tour else None
 
     for i in range(1, len(tour)):
-
-        from_node = tour[i - 1]
-        to_node = tour[i]
-
-        _, _, energy_used = get_dynamic_arc_values(
-            from_node,
-            to_node,
-            distance_matrix,
-            scenario
+        from_node, to_node = tour[i - 1], tour[i]
+        _, travel_time, energy_used = get_dynamic_arc_values(
+            from_node, to_node, distance_matrix, scenario
         )
-
         total_energy += energy_used
+        current_time += travel_time
 
-    return max(
-        0.0,
-        total_energy - float(battery_capacity)
-    )
+        if to_node == depot or C_TW is None or C_service is None or to_node not in C_TW:
+            continue
+
+        tw_start, tw_end = map(float, C_TW[to_node])
+        waiting = max(0.0, tw_start - current_time)
+        current_time += waiting
+        idle_duration += waiting
+        service = float(C_service[to_node])
+        idle_duration += service
+        current_time += service
+
+    total_energy += float(vehicle_energy_decay) * idle_duration
+    return max(0.0, total_energy - float(battery_capacity))
 
 
 # ==================================================
@@ -514,7 +522,9 @@ def route_objective(
         energy_violation = route_energy_violation(
             complete_route,
             distance_matrix,
-            scenario
+            scenario,
+            TW_C,
+            ServiceT_C
         )
 
         energy_penalty = (
@@ -737,7 +747,7 @@ def vns(
     route_max_time=None,
     alpha=0.1,
     beta=0.2,
-    max_runtime=900
+    max_runtime=None
 ):
     """
     VNS with dynamic scenario evaluation.
@@ -785,7 +795,10 @@ def vns(
 
     while (
         k <= k_max
-        and time.time() - start_time < max_runtime
+        and (
+            max_runtime is None
+            or time.time() - start_time < float(max_runtime)
+        )
     ):
 
         # ------------------------------------------
