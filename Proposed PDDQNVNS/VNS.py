@@ -2,146 +2,493 @@ from scipy.spatial import distance
 import numpy as np
 import random
 import time
+import copy
 
 
 def compute_distances(clients):
-    distances = dict()
+    """
+    Calculate Euclidean distances between all pairs of nodes.
+    """
+    distances = {}
+
     for from_client in clients.keys():
         for to_client in clients.keys():
-            distances[(from_client, to_client)] = distance.euclidean(clients[from_client], clients[to_client])
+            distances[(from_client, to_client)] = distance.euclidean(
+                clients[from_client],
+                clients[to_client]
+            )
+
     return distances
 
 
 def tour_distance(tour, dist_matrix):
-    return sum([dist_matrix[(tour[i-1],tour[i])] for i in range(len(tour))])
+    """
+    Calculate the total distance of a route or concatenated routes.
+    """
+    if len(tour) < 2:
+        return 0.0
 
+    total_distance = 0.0
 
-def two_opt(route, i, j):
-    tour = route[1:-1]
-    new_tour = [route[0]] + tour[:i] + tour[i:j+1][::-1] + tour[j+1:] + [route[-1]]
-    return new_tour
+    for i in range(1, len(tour)):
+        total_distance += dist_matrix[(tour[i - 1], tour[i])]
 
-
-def local_search(tour, dist_matrix, operator):
-    better_solution_found = True
-    while better_solution_found:
-        better_solution_found = False
-        for i in range(1, len(tour) - 1):
-            for j in range(i+1, len(tour)):
-                if j-i == 1: continue
-                new_tour = operator(tour, i, j)
-                if  tour_distance(new_tour, dist_matrix) < tour_distance(tour, dist_matrix):
-                    tour = new_tour
-                    better_solution_found = True
-    return tour
-
-def shaking(tour, k):
-    new_tour = tour[:]
-    for _ in range(k):
-        if len(tour)>3:
-            i, j = sorted(random.sample(range(1, len(tour)-1), 2))
-            new_tour = two_opt(new_tour, i, j)
-    return new_tour
-
-
-import copy
-def route_time_eval(tour, distance_matrix, C_TW, C_service, alpha=0.1, beta=0.2):
-    route = copy.deepcopy(tour)[1:-1]
-    route_service_time = 0
-    route_tw_violation = 0
-    total_time = distance_matrix[(tour[0],route[0])]
-
-    ind = 0
-    while ind < len(route)-1:
-        i = route[ind]
-        j = route[ind+1]
-        dist_ij = distance_matrix[(i,j)]
-
-        if i in C_service.keys():
-            route_service_time += C_service[i]
-            if total_time > C_TW[i][1]:
-                route_tw_violation += beta*(total_time-C_TW[i][1])
-            elif total_time < C_TW[i][0]:
-                route_tw_violation += alpha*(C_TW[i][0]-total_time)
-                total_time = C_TW[i][0]
-
-            total_time += route_service_time
-            total_time += dist_ij
-        ind += 1
-
-    # time_cost = route_service_time + route_tw_violation
-    time_cost = route_tw_violation
-    return time_cost
+    return total_distance
 
 
 def routes_decompose(solution, depot):
+    """
+    Split a concatenated solution into individual depot-to-depot routes.
+
+    Example:
+        [D, 1, 2, D, D, 3, 4, D]
+        ->
+        [[D, 1, 2, D], [D, 3, 4, D]]
+
+    Empty routes caused by consecutive depot nodes are ignored.
+    """
     routes = []
-    route = [solution[0]]
-    for node_ind in range(1, len(solution)):
-        node = solution[node_ind]
+    current_route = [depot]
+
+    for node in solution[1:]:
         if node == depot:
-            if len(route):
-                route.append(node)
-                routes.append(route)
-                route = []
-            else:
-                route.append(node)
+            if len(current_route) > 1:
+                current_route.append(depot)
+                routes.append(current_route)
+
+            current_route = [depot]
+
         else:
-            route.append(node)
+            current_route.append(node)
+
+    # Handle a route that does not explicitly end at the depot.
+    if len(current_route) > 1:
+        current_route.append(depot)
+        routes.append(current_route)
 
     return routes
 
 
-def routes_breaking(solution, demands, max_cap, depot):
-    routes = routes_decompose(solution, depot)
-    
-    break_points = list()
+def routes_combine(routes, depot):
+    """
+    Combine individual routes into the original flattened representation.
+
+    Consecutive depot nodes separate different routes.
+    """
+    solution = []
+
     for route in routes:
-        route_demand = 0
-        if len(route) > 2:
-            for i in route:
-                if i in demands.keys():
-                    route_demand += demands[i]
-                    if route_demand > max_cap:
-                        break_points.append(i)
-                        route_demand = 0
-                        
-    solution_ = []
-    for route in routes:
-            solution_.extend(route)
-    
-    for item in break_points:
-        item_index = solution.index(item)
-        solution.insert(item_index-1, depot)
-    
+        if len(route) <= 2:
+            continue
+
+        if solution:
+            solution.append(depot)
+
+        solution.extend(route)
+
     return solution
 
-def vns(tour, depot, demands, max_cap, dist_matrix, TW, ST, alpha=0.1, beta=0.2, dist_rate=1, time_rate=1, k_max=100, operator=two_opt):
-    k = 1
-    total_exploration_time = 0
-    total_exploitation_time = 0
 
-    start_time = time.time()
-    while k <= k_max and (time.time()-start_time) < 1*15*60:
-        print(f"VNS {k}, {(time.time()-start_time)}")
+def two_opt(route, i, j):
+    """
+    Apply a 2-opt reversal while keeping depot endpoints unchanged.
+
+    i and j are indices in the original route.
+    """
+    if len(route) <= 3:
+        return route[:]
+
+    if i <= 0 or j >= len(route) - 1 or i >= j:
+        return route[:]
+
+    new_route = (
+        route[:i]
+        + route[i:j + 1][::-1]
+        + route[j + 1:]
+    )
+
+    return new_route
+
+
+def _two_opt_candidates(route):
+    """
+    Generate valid 2-opt index pairs.
+    """
+    candidates = []
+
+    for i in range(1, len(route) - 2):
+        for j in range(i + 2, len(route) - 1):
+            candidates.append((i, j))
+
+    return candidates
+
+
+def shaking(tour, k):
+    """
+    Randomly modify each depot-to-depot route using 2-opt.
+
+    The number of random 2-opt operations is controlled by k.
+    Route boundaries are preserved.
+    """
+    if len(tour) <= 2:
+        return tour[:]
+
+    depot = tour[0]
+    routes = routes_decompose(tour, depot)
+
+    shaken_routes = []
+
+    for route in routes:
+        new_route = route[:]
+
+        for _ in range(k):
+            candidates = _two_opt_candidates(new_route)
+
+            if not candidates:
+                break
+
+            i, j = random.choice(candidates)
+            new_route = two_opt(new_route, i, j)
+
+        shaken_routes.append(new_route)
+
+    return routes_combine(shaken_routes, depot)
+
+
+def _route_cost(
+    tour,
+    dist_matrix,
+    C_TW=None,
+    C_service=None,
+    alpha=0.1,
+    beta=0.2,
+    dist_rate=1,
+    time_rate=1
+):
+    """
+    Calculate the combined distance and time-window cost.
+    """
+    distance_cost = dist_rate * tour_distance(tour, dist_matrix)
+
+    time_cost = 0.0
+
+    if C_TW is not None and C_service is not None:
+        time_cost = time_rate * route_time_eval(
+            tour,
+            dist_matrix,
+            C_TW,
+            C_service,
+            alpha,
+            beta
+        )
+
+    return distance_cost + time_cost
+
+
+def local_search(
+    tour,
+    dist_matrix,
+    operator,
+    TW=None,
+    ST=None,
+    alpha=0.1,
+    beta=0.2,
+    dist_rate=1,
+    time_rate=1
+):
+    """
+    Improve each individual route through 2-opt local search.
+
+    The same combined objective used by the VNS acceptance step
+    is used when deciding whether to accept a local improvement.
+    """
+    if len(tour) <= 2:
+        return tour[:]
+
+    depot = tour[0]
+    routes = routes_decompose(tour, depot)
+
+    improved_routes = []
+
+    for route in routes:
+        current_route = route[:]
+        improvement_found = True
+
+        while improvement_found:
+            improvement_found = False
+
+            candidates = _two_opt_candidates(current_route)
+
+            for i, j in candidates:
+                new_route = operator(current_route, i, j)
+
+                current_cost = _route_cost(
+                    current_route,
+                    dist_matrix,
+                    TW,
+                    ST,
+                    alpha,
+                    beta,
+                    dist_rate,
+                    time_rate
+                )
+
+                new_cost = _route_cost(
+                    new_route,
+                    dist_matrix,
+                    TW,
+                    ST,
+                    alpha,
+                    beta,
+                    dist_rate,
+                    time_rate
+                )
+
+                if new_cost < current_cost:
+                    current_route = new_route
+                    improvement_found = True
+                    break
+
+        improved_routes.append(current_route)
+
+    return routes_combine(improved_routes, depot)
+
+
+def route_time_eval(
+    tour,
+    distance_matrix,
+    C_TW,
+    C_service,
+    alpha=0.1,
+    beta=0.2
+):
+    """
+    Calculate early and late time-window violation penalties.
+
+    Arrival time is calculated from:
+        previous departure time + travel time
+
+    If a vehicle arrives before the opening time:
+        - Early-arrival penalty is calculated using the paper's formula.
+        - The vehicle waits until the opening time before service.
+
+    Service time is added once per customer.
+    """
+    if len(tour) <= 2:
+        return 0.0
+
+    routes = routes_decompose(tour, tour[0])
+
+    total_penalty = 0.0
+
+    for route in routes:
+        if len(route) <= 2:
+            continue
+
+        current_time = 0.0
+        previous_node = route[0]
+
+        for customer in route[1:-1]:
+
+            travel_time = distance_matrix[
+                (previous_node, customer)
+            ]
+
+            arrival_time = current_time + travel_time
+
+            if customer in C_TW:
+                ready_time = C_TW[customer][0]
+                due_time = C_TW[customer][1]
+
+                # Early-arrival penalty.
+                if arrival_time < ready_time:
+                    total_penalty += alpha * (
+                        ready_time - arrival_time
+                    )
+
+                # Late-arrival penalty.
+                elif arrival_time > due_time:
+                    total_penalty += beta * (
+                        arrival_time - due_time
+                    )
+
+                # Wait until the time window opens if arriving early.
+                service_start_time = max(
+                    arrival_time,
+                    ready_time
+                )
+
+            else:
+                service_start_time = arrival_time
+
+            service_time = C_service.get(customer, 0.0)
+
+            # Service time is added exactly once.
+            current_time = service_start_time + service_time
+
+            previous_node = customer
+
+    return total_penalty
+
+
+def routes_breaking(solution, demands, max_cap, depot):
+    """
+    Split routes whenever adding the next customer would exceed
+    the maximum vehicle capacity.
+
+    The input solution is not modified.
+    """
+    routes = routes_decompose(solution, depot)
+
+    split_routes = []
+
+    for route in routes:
+        current_route = [depot]
+        current_demand = 0.0
+
+        for customer in route[1:-1]:
+
+            customer_demand = demands.get(customer, 0.0)
+
+            if (
+                current_demand + customer_demand > max_cap
+                and len(current_route) > 1
+            ):
+                current_route.append(depot)
+                split_routes.append(current_route)
+
+                current_route = [depot]
+                current_demand = 0.0
+
+            current_route.append(customer)
+            current_demand += customer_demand
+
+        if len(current_route) > 1:
+            current_route.append(depot)
+            split_routes.append(current_route)
+
+    return routes_combine(split_routes, depot)
+
+
+def vns(
+    tour,
+    depot,
+    demands,
+    max_cap,
+    dist_matrix,
+    TW,
+    ST,
+    alpha=0.1,
+    beta=0.2,
+    dist_rate=1,
+    time_rate=1,
+    k_max=50,
+    operator=two_opt
+):
+    """
+    Modified Variable Neighborhood Search.
+
+    The stopping condition follows the paper:
+        k <= k_max
+
+    Each route is processed independently, while the total
+    solution is evaluated using the combined objective.
+    """
+    k = 1
+
+    total_exploration_time = 0.0
+    total_exploitation_time = 0.0
+
+    # Ensure the input is not modified.
+    tour = copy.deepcopy(tour)
+
+    # Split routes at capacity violations before optimization.
+    tour = routes_breaking(
+        tour,
+        demands,
+        max_cap,
+        depot
+    )
+
+    while k <= k_max:
+
+        # -------------------------
+        # Shaking
+        # -------------------------
         time_start = time.time()
+
         k_tour = shaking(tour, k)
+
         time_end = time.time()
         total_exploration_time += time_end - time_start
+
+        # -------------------------
+        # Local Search
+        # -------------------------
         time_start = time.time()
-        new_tour = local_search(k_tour, dist_matrix, operator)
+
+        new_tour = local_search(
+            k_tour,
+            dist_matrix,
+            operator,
+            TW,
+            ST,
+            alpha,
+            beta,
+            dist_rate,
+            time_rate
+        )
+
         time_end = time.time()
         total_exploitation_time += time_end - time_start
 
-        new_tour = routes_breaking(new_tour, demands, max_cap, depot)
+        # -------------------------
+        # Capacity constraint
+        # -------------------------
+        new_tour = routes_breaking(
+            new_tour,
+            demands,
+            max_cap,
+            depot
+        )
 
-        cost_new_tour = dist_rate*tour_distance(new_tour, dist_matrix) + time_rate*route_time_eval(new_tour, dist_matrix, TW, ST, alpha, beta)
-        cost_tour = dist_rate*tour_distance(tour, dist_matrix) + time_rate*route_time_eval(tour, dist_matrix, TW, ST, alpha, beta)
+        # -------------------------
+        # Objective evaluation
+        # -------------------------
+        cost_new_tour = _route_cost(
+            new_tour,
+            dist_matrix,
+            TW,
+            ST,
+            alpha,
+            beta,
+            dist_rate,
+            time_rate
+        )
 
+        cost_tour = _route_cost(
+            tour,
+            dist_matrix,
+            TW,
+            ST,
+            alpha,
+            beta,
+            dist_rate,
+            time_rate
+        )
+
+        # -------------------------
+        # Neighborhood change
+        # -------------------------
         if cost_new_tour < cost_tour:
             tour = new_tour
             k = 1
+
         else:
             k += 1
 
-    return tour, total_exploration_time, total_exploitation_time
+    return (
+        tour,
+        total_exploration_time,
+        total_exploitation_time
+    )
