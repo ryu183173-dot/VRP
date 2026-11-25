@@ -24,7 +24,7 @@ def tour_distance(tour, dist_matrix):
 
 
 def two_opt(route, i, j):
-    """先頭・末尾のデポを保持したまま区間 [i, j] を反転する。"""
+    """先頭・末尾のデポを保持したまま区間 [i, j] を反転する"""
     if len(route) < 4 or i < 1 or j >= len(route) - 1 or i >= j:
         return route[:]
     return route[:i] + route[i:j + 1][::-1] + route[j + 1:]
