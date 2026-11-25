@@ -1,74 +1,98 @@
 import copy
+from scipy.spatial import distance
 import numpy as np
-from scipy.spatial.distance import euclidean
+import random
 
 
+N = 12
+
+## Function to decompose a solution route for a depot
 def route_decompose(route):
-    """Split a depot-delimited route into customer-only trips."""
-    if not route:
-        return []
     depot = route[0]
-    routes, current = [], []
-    for node in route[1:]:
-        if node == depot:
-            if current:
-                routes.append(current)
-                current = []
-        else:
-            current.append(node)
-    if current:
-        routes.append(current)
+    routes = []
+    depot_indices = [i for i, item in enumerate(route) if item==depot]
+    for i in range(len(depot_indices)-1):
+        routes.append(route[depot_indices[i]: depot_indices[i+1]+1])
     return routes
 
-
+## Algorithm 1
 def generating_clusters(coordinates, depot_coords):
-    """
-    Depot clustering following the proximity-ratio/capacity logic of
-    Shahbazian et al. (2025), Algorithm 4. Customers with a smaller
-    nearest/second-nearest distance ratio are assigned first. A balanced
-    target is used; if both preferred clusters are full, the nearest depot
-    receives the remaining customer so every customer is assigned exactly once.
-    """
-    customer_ids = list(coordinates.keys())
-    depot_ids = list(depot_coords.keys())
-    if not depot_ids:
-        raise ValueError("At least one depot is required.")
-    clusters = {d: [] for d in depot_ids}
-    if not customer_ids:
-        return clusters
+    customres = copy.deepcopy(list(coordinates.keys())) ## customers => C'
+    depots = copy.deepcopy(list(depot_coords.keys())) ## depots => D'
+    
+    HD = dict(zip(range(len(depots)), [list()]*len(depots))) ## set if (i,d) of customers assigned to depot d
 
-    target = max(1, int(len(customer_ids) / len(depot_ids)))
-    ranked = []
-    for c in customer_ids:
-        distances = sorted(
-            ((float(euclidean(coordinates[c], depot_coords[d])), d) for d in depot_ids),
-            key=lambda x: (x[0], depot_ids.index(x[1]))
-        )
-        d1_dist, d1 = distances[0]
-        if len(distances) == 1:
-            d2_dist, d2 = float('inf'), d1
-            ratio = 0.0
-        else:
-            d2_dist, d2 = distances[1]
-            ratio = d1_dist / max(d2_dist, 1e-12)
-        ranked.append((ratio, customer_ids.index(c), c, d1, d2))
+    while len(customres): ## customers => C'
+        A = dict(zip(range(len(depots)), [list()]*len(depots))) ## pairs of (i,d) where d is the closest depot to the customer i 
+        B = dict(zip(range(len(depots)), [list()]*len(depots))) ## pairs of (i,d) where d is the second closest depot to the customer i    
+        HR = dict(zip(range(len(customres)), [np.inf]*len(customres))) ## set of pairs (i, 𝑟𝑑1𝑑2) where 𝑟𝑑1𝑑2 is the ratio of proximity of customer 𝑖 to the two closest depots
 
-    ranked.sort(key=lambda x: (x[0], x[1]))
-    for _, _, c, d1, d2 in ranked:
-        if len(clusters[d1]) < target:
-            chosen = d1
-        elif d2 != d1 and len(clusters[d2]) < target:
-            chosen = d2
-        else:
-            # Algorithm 4's fallback assigns to the closest depot d1.
-            chosen = d1
-        clusters[chosen].append(c)
+        j = 0
+        while j < len(customres):
+            i = customres[j]
+            i_coords = coordinates[i]
 
-    # Preserve the original customer order within each cluster.
-    order = {c: i for i, c in enumerate(customer_ids)}
-    for d in depot_ids:
-        clusters[d].sort(key=order.__getitem__)
-    assigned = [c for values in clusters.values() for c in values]
-    if len(assigned) != len(customer_ids) or len(set(assigned)) != len(customer_ids):
-        raise RuntimeError("Depot clustering failed to assign each customer exactly once.")
-    return clusters
+            id_dists = dict()
+            for d in range(len(depots)):
+                d_coords = depot_coords[d]
+                dist =  distance.euclidean(d_coords, i_coords)
+                id_dists[d] = dist
+            
+            dist_reversed = {v: k for k, v in id_dists.items()}
+            if len(id_dists):
+                c_d1i = min(id_dists.values())
+                d1 = dist_reversed[c_d1i]
+                A[d1] = list(set(A[d1] + [i]))
+                dist_copy = copy.deepcopy(id_dists)
+
+                if len(dist_copy)>1: ## This Block is added: Code Modified to avoid a forever interminable loop
+                    dist_copy.pop(d1) ## causes problem 
+
+                dist_reversed = {v: k for k, v in dist_copy.items()}
+                if len(dist_copy):
+                    c_d2i = min(dist_copy.values())
+                    d2 = dist_reversed[c_d2i]
+                    B[d2] = list(set(B[d2] + [i]))
+                    rd1d2 = float(c_d1i/c_d2i)
+                    HR[i] = rd1d2
+
+            j += 1
+        ## End While
+        HR = dict(sorted(HR.items(), key=lambda item: item[1]))
+
+        j = 0
+        assigned_clients = [] ## assigned clients => C"
+        while j < len(customres):
+            i = list(HR.keys())[j]
+
+            for di in A.keys():
+                if i in A[di]:
+                    d1 = di
+                elif i in B[di]:
+                    d2 = di
+
+            td1 = len(HD[d1])
+            td2 = len(HD[d2])
+            if td1 < int(len(coordinates)/len(depot_coords)):
+                HD[d1] = HD[d1] + [i]
+                assigned_clients.append(i)
+            elif td2 < int(len(coordinates)/len(depot_coords)):
+                HD[d2] = HD[d2] + [i]
+                assigned_clients.append(i)
+            else: ## This Block is added: Code Modified to avoid a forever interminable loop
+                HD[d1] = HD[d1] + [i]
+                assigned_clients.append(i)
+            j += 1
+        ## End While
+            
+        for item in assigned_clients:
+            customres.remove(item)
+
+        j = 0
+        while j < len(depots):
+            d = depots[j]
+            td = len(HD[d])
+            if td >= int(len(coordinates)/len(depot_coords)):
+                depots.remove(d)
+            j += 1
+    return HD
